@@ -1,0 +1,49 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Go coverage files
+*.coverprofile
+coverage.html
+
+# Dependency directories
+/vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# SSH server specific
+/sshd
+/sshd-go
+hostkey*
+authorized_keys
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+*.sock
