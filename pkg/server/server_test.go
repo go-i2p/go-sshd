@@ -79,20 +79,6 @@ func TestServerConfiguration(t *testing.T) {
 	}
 }
 
-func TestGetUserShell(t *testing.T) {
-	// Test the placeholder implementation
-	shell := getUserShell("testuser")
-	if shell != "/bin/bash" {
-		t.Errorf("Expected /bin/bash, got %s", shell)
-	}
-
-	// Test with different user - should still return bash for now
-	shell = getUserShell("root")
-	if shell != "/bin/bash" {
-		t.Errorf("Expected /bin/bash for root, got %s", shell)
-	}
-}
-
 // TestServerLifecycle tests server creation and basic lifecycle
 func TestServerLifecycle(t *testing.T) {
 	cfg := &config.Config{

@@ -5,7 +5,6 @@ package server
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -53,8 +52,9 @@ func New(cfg *config.Config) (*Server, error) {
 		sshServer.PublicKeyHandler = authHandler.CreatePublicKeyHandler()
 	}
 
-	// Configure session handler for shell sessions
-	sshServer.Handler = createSessionHandler(logger)
+	// Configure session handler using the new ShellHandler
+	shellHandler := handlers.NewShellHandler(logger)
+	sshServer.Handler = shellHandler.CreateSessionHandler()
 
 	server := &Server{
 		config: cfg,
@@ -133,78 +133,4 @@ func loadHostKeys(server *ssh.Server, hostKeys []string, logger *logrus.Logger) 
 	}
 
 	return nil
-}
-
-// createSessionHandler creates the main session handler for shell sessions.
-// This provides basic shell session support using system shell.
-func createSessionHandler(logger *logrus.Logger) ssh.Handler {
-	return func(s ssh.Session) {
-		user := s.User()
-		logger.Infof("Session started for user %s from %s", user, s.RemoteAddr())
-
-		// Get user's shell from system or default to bash
-		shell := "/bin/bash"
-		if userShell := getUserShell(user); userShell != "" {
-			shell = userShell
-		}
-
-		// Create shell command
-		cmd := exec.Command(shell)
-		cmd.Env = append(os.Environ(),
-			fmt.Sprintf("SSH_CLIENT=%s", s.RemoteAddr()),
-			fmt.Sprintf("SSH_CONNECTION=%s", s.RemoteAddr()),
-		)
-
-		// Connect SSH session to shell command
-		cmd.Stdin = s
-		cmd.Stdout = s
-		cmd.Stderr = s
-
-		// Handle PTY requests
-		ptyReq, winCh, isPty := s.Pty()
-		if isPty {
-			logger.Infof("PTY requested for user %s: %s", user, ptyReq.Term)
-			// TODO: Proper PTY setup will be implemented later
-			// For now, just set basic environment
-			cmd.Env = append(cmd.Env, fmt.Sprintf("TERM=%s", ptyReq.Term))
-		}
-
-		// Start the shell
-		if err := cmd.Start(); err != nil {
-			logger.Errorf("Failed to start shell for user %s: %v", user, err)
-			s.Exit(1)
-			return
-		}
-
-		// Handle window size changes if PTY
-		if isPty {
-			go func() {
-				for win := range winCh {
-					// TODO: Implement window size changes
-					logger.Debugf("Window size change: %dx%d", win.Width, win.Height)
-				}
-			}()
-		}
-
-		// Wait for shell to complete
-		if err := cmd.Wait(); err != nil {
-			if exitError, ok := err.(*exec.ExitError); ok {
-				s.Exit(exitError.ExitCode())
-			} else {
-				logger.Errorf("Shell error for user %s: %v", user, err)
-				s.Exit(1)
-			}
-		} else {
-			s.Exit(0)
-		}
-
-		logger.Infof("Session ended for user %s", user)
-	}
-}
-
-// getUserShell gets the user's default shell from the system.
-// This is a placeholder - real implementation would parse /etc/passwd.
-func getUserShell(user string) string {
-	// TODO: Parse /etc/passwd or use system libraries to get user shell
-	return "/bin/bash"
 }

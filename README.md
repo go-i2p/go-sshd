@@ -11,9 +11,11 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Command-line interface matching OpenSSH sshd
 - Basic SSH server framework using gliderlabs/ssh  
 - Structured logging and signal handling
+- Complete authentication system (PAM integration, public key auth)
+- Interactive shell sessions with PTY support
 - Complete test suite with >80% coverage
 
-**🔄 Next Phase:** Authentication handlers (PAM integration, public key auth)
+**🔄 Next Phase:** File transfer support (SFTP subsystem integration)
 
 **📊 Current Metrics:** ~400 lines custom code, 5 dependencies, library-first architecture
 
