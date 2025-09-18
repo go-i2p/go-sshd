@@ -56,6 +56,12 @@ func New(cfg *config.Config) (*Server, error) {
 	shellHandler := handlers.NewShellHandler(logger)
 	sshServer.Handler = shellHandler.CreateSessionHandler()
 
+	// Configure SFTP subsystem handler
+	sftpHandler := handlers.NewSFTPHandler(cfg, logger)
+	sshServer.SubsystemHandlers = map[string]ssh.SubsystemHandler{
+		"sftp": sftpHandler.CreateSubsystemHandler(),
+	}
+
 	server := &Server{
 		config: cfg,
 		ssh:    sshServer,
