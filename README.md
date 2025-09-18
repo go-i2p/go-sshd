@@ -13,11 +13,12 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Structured logging and signal handling
 - Complete authentication system (PAM integration, public key auth)
 - Interactive shell sessions with PTY support
+- SFTP subsystem for file transfer (scp/sftp client support)
 - Complete test suite with >80% coverage
 
-**🔄 Next Phase:** File transfer support (SFTP subsystem integration)
+**🔄 Next Phase:** Port forwarding support (local, remote, dynamic)
 
-**📊 Current Metrics:** ~400 lines custom code, 5 dependencies, library-first architecture
+**📊 Current Metrics:** ~1000 lines custom code, 6 dependencies, library-first architecture
 
 ## Goal
 
