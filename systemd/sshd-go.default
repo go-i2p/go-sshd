@@ -1,0 +1,15 @@
+# Default options for sshd-go
+# This file is sourced by the systemd service file
+
+# Command line options for sshd-go
+# Example: SSHD_OPTS="-f /etc/ssh/sshd_config -D"
+SSHD_OPTS=""
+
+# Enable debugging (uncomment for troubleshooting)
+# SSHD_OPTS="-f /etc/ssh/sshd_config -D -e"
+
+# Use custom configuration file
+# SSHD_OPTS="-f /path/to/custom/sshd_config -D"
+
+# Test configuration on startup (recommended for production)
+# SSHD_OPTS="-t && /usr/local/sbin/sshd-go -f /etc/ssh/sshd_config -D"

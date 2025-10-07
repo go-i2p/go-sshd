@@ -125,6 +125,7 @@ func TestCommandFlags(t *testing.T) {
 		{"daemon", "daemon", "D", "run in foreground mode"},
 		{"test", "test", "t", "test configuration and exit"},
 		{"version", "version", "V", "show version information"},
+		{"inetd", "inetd", "i", "run from inetd/systemd socket activation"},
 	}
 
 	for _, tt := range tests {

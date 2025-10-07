@@ -4,6 +4,7 @@ package server
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/gliderlabs/ssh"
 
@@ -274,4 +275,45 @@ func (s *Server) Stop() error {
 // Future implementation could add proper daemonization with fork/exec.
 func (s *Server) StartDaemon() error {
 	return s.Start()
+}
+
+// NewInetd creates a new SSH server configured for inetd/socket activation mode.
+// This mode is used when the server is started by systemd socket activation.
+func NewInetd(cfg *config.Config) (*Server, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration is required")
+	}
+
+	// Create centralized logger from configuration
+	logger, err := logging.NewLogger(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+
+	server := &Server{
+		config: cfg,
+		logger: logger,
+		// No signal handler needed for inetd mode
+	}
+
+	// Initialize SSH server with current configuration
+	if err := server.initializeSSHServer(); err != nil {
+		return nil, err
+	}
+
+	return server, nil
+}
+
+// HandleConnection handles a single SSH connection in inetd mode.
+// This method is used for systemd socket activation where each connection
+// is handled by a separate process instance.
+func (s *Server) HandleConnection(conn net.Conn) error {
+	s.logger.Info("Handling SSH connection in inetd mode")
+
+	// Handle the connection using gliderlabs/ssh
+	// Note: HandleConn doesn't return an error, it blocks until connection closes
+	s.ssh.HandleConn(conn)
+
+	s.logger.Info("SSH connection completed")
+	return nil
 }

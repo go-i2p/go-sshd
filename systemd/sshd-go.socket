@@ -1,0 +1,16 @@
+[Unit]
+Description=sshd-go socket
+Conflicts=sshd-go.service
+ConditionPathExists=!/etc/ssh/sshd_not_to_be_run
+
+[Socket]
+ListenStream=22
+Accept=yes
+MaxConnections=64
+
+# Socket options for SSH
+NoDelay=yes
+KeepAlive=yes
+
+[Install]
+WantedBy=sockets.target

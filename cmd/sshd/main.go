@@ -4,7 +4,9 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"time"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 	"github.com/go-i2p/go-sshd/pkg/server"
@@ -33,6 +35,7 @@ func newRootCmd() *cobra.Command {
 		daemon      bool
 		testConfig  bool
 		showVersion bool
+		inetdMode   bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,6 +66,11 @@ advantages including single binary distribution and efficient resource usage.`,
 				return validateAndReportConfig(cfg)
 			}
 
+			// Check for inetd mode (socket activation)
+			if inetdMode {
+				return runInetdMode(cfg)
+			}
+
 			// Create and start the SSH server with config file for reload capability
 			srv, err := server.NewWithConfigFile(cfg, configFile)
 			if err != nil {
@@ -90,6 +98,7 @@ advantages including single binary distribution and efficient resource usage.`,
 	cmd.Flags().BoolVarP(&daemon, "daemon", "D", false, "run in foreground mode")
 	cmd.Flags().BoolVarP(&testConfig, "test", "t", false, "test configuration and exit")
 	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
+	cmd.Flags().BoolVarP(&inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
 
 	return cmd
 }
@@ -158,5 +167,62 @@ func validateAndReportConfig(cfg *config.Config) error {
 		os.Exit(1)
 	}
 
+	return nil
+}
+
+// runInetdMode runs the SSH server in inetd/socket activation mode.
+// In this mode, the server handles a single connection passed via stdin/stdout
+// and exits when the connection is closed. This is used for systemd socket activation.
+func runInetdMode(cfg *config.Config) error {
+	// Create server for inetd mode
+	srv, err := server.NewInetd(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create inetd server: %w", err)
+	}
+
+	// Use stdin/stdout as the network connection (provided by systemd socket activation)
+	conn := &stdinoutConn{}
+	
+	// Handle the single connection
+	return srv.HandleConnection(conn)
+}
+
+// stdinoutConn implements net.Conn interface using stdin/stdout.
+// This allows the SSH server to work with systemd socket activation.
+type stdinoutConn struct{}
+
+func (c *stdinoutConn) Read(b []byte) (n int, err error) {
+	return os.Stdin.Read(b)
+}
+
+func (c *stdinoutConn) Write(b []byte) (n int, err error) {
+	return os.Stdout.Write(b)
+}
+
+func (c *stdinoutConn) Close() error {
+	// Don't actually close stdin/stdout as they're owned by the system
+	return nil
+}
+
+func (c *stdinoutConn) LocalAddr() net.Addr {
+	return &net.UnixAddr{Name: "stdin", Net: "unix"}
+}
+
+func (c *stdinoutConn) RemoteAddr() net.Addr {
+	return &net.UnixAddr{Name: "stdout", Net: "unix"}
+}
+
+func (c *stdinoutConn) SetDeadline(t time.Time) error {
+	// stdin/stdout don't support deadlines
+	return nil
+}
+
+func (c *stdinoutConn) SetReadDeadline(t time.Time) error {
+	// stdin/stdout don't support deadlines
+	return nil
+}
+
+func (c *stdinoutConn) SetWriteDeadline(t time.Time) error {
+	// stdin/stdout don't support deadlines
 	return nil
 }

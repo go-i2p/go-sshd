@@ -1,0 +1,19 @@
+[Unit]
+Description=sshd-go per-connection daemon
+Conflicts=sshd-go.service
+After=auditd.service
+
+[Service]
+Type=simple
+ExecStart=-/usr/local/sbin/sshd-go -i $SSHD_OPTS
+StandardInput=socket
+StandardError=journal
+
+# Security settings for socket-activated instances
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /var/run /etc/ssh
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_AUDIT_WRITE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SYS_CHROOT CAP_AUDIT_WRITE CAP_DAC_READ_SEARCH
