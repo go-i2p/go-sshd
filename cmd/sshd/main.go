@@ -182,7 +182,7 @@ func runInetdMode(cfg *config.Config) error {
 
 	// Use stdin/stdout as the network connection (provided by systemd socket activation)
 	conn := &stdinoutConn{}
-	
+
 	// Handle the single connection
 	return srv.HandleConnection(conn)
 }
