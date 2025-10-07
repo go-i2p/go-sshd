@@ -4,7 +4,7 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 
 ## Status
 
-🚧 **In Development** - Phase 1 Complete (Foundation)
+🚧 **In Development** - Phase 5 Complete (Host Key Management)
 
 **✅ Implemented:**
 - OpenSSH-compatible configuration parsing (sshd_config)
@@ -14,11 +14,13 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Complete authentication system (PAM integration, public key auth)
 - Interactive shell sessions with PTY support
 - SFTP subsystem for file transfer (scp/sftp client support)
-- Complete test suite with >80% coverage
+- Complete port forwarding support (local, remote, direct TCP/IP)
+- Comprehensive host key management (auto-generation, multiple key types)
+- Complete test suite with >85% coverage
 
-**🔄 Next Phase:** Port forwarding support (local, remote, dynamic)
+**🔄 Next Phase:** Enhanced logging system, signal handling for configuration reload
 
-**📊 Current Metrics:** ~1000 lines custom code, 6 dependencies, library-first architecture
+**📊 Current Metrics:** ~1200 lines custom code, 7 dependencies, library-first architecture
 
 ## Goal
 

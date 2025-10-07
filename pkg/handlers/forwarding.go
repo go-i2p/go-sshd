@@ -94,10 +94,16 @@ func (h *ForwardingHandler) isForwardingAllowed(user, forwardType, host string, 
 		if !h.config.AllowTcpForwarding {
 			return false
 		}
+		// For local forwarding, check if target host is allowed
+		if !h.isTargetHostAllowed(host) {
+			return false
+		}
 	case "remote":
 		if !h.config.AllowTcpForwarding {
 			return false
 		}
+		// For remote forwarding, the host is a bind address, not a target host
+		// Don't apply target host restrictions to bind addresses
 	default:
 		return false
 	}
@@ -105,11 +111,6 @@ func (h *ForwardingHandler) isForwardingAllowed(user, forwardType, host string, 
 	// Check if target port is in restricted range (below 1024 for non-root)
 	if port < 1024 && user != "root" {
 		h.logger.Debugf("Privileged port %d denied for non-root user %s", port, user)
-		return false
-	}
-
-	// Check if target host is allowed (basic implementation)
-	if !h.isTargetHostAllowed(host) {
 		return false
 	}
 

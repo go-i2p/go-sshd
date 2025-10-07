@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
+	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/handlers"
 )
 
@@ -40,9 +41,28 @@ func New(cfg *config.Config) (*Server, error) {
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 	}
 
-	// Configure host keys - using gliderlabs/ssh host key loading
-	if err := loadHostKeys(sshServer, cfg.HostKey, logger); err != nil {
-		return nil, fmt.Errorf("failed to load host keys: %w", err)
+	// Configure host keys using the new HostKeyManager
+	hostKeyManager := crypto.NewHostKeyManager(cfg.HostKey)
+	signers, err := hostKeyManager.LoadOrGenerateKeys()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load or generate host keys: %w", err)
+	}
+
+	// Add all signers to the SSH server
+	for i, signer := range signers {
+		if err := crypto.ValidateHostKey(signer); err != nil {
+			logger.Errorf("Invalid host key %d: %v", i, err)
+			continue
+		}
+
+		sshServer.AddHostKey(signer)
+		fingerprint := crypto.GetKeyFingerprint(signer.PublicKey())
+		keyType := crypto.GetKeyType(signer.PublicKey())
+		logger.Infof("Loaded host key: %s %s", keyType, fingerprint)
+	}
+
+	if len(signers) == 0 {
+		return nil, fmt.Errorf("no valid host keys loaded")
 	}
 
 	// Configure authentication handlers using the new AuthHandler
@@ -130,42 +150,4 @@ func (s *Server) Start() error {
 // Future implementation could add proper daemonization.
 func (s *Server) StartDaemon() error {
 	return s.Start()
-}
-
-// loadHostKeys loads SSH host keys using gliderlabs/ssh host key helpers.
-// This function integrates with OpenSSH-style host key files.
-func loadHostKeys(server *ssh.Server, hostKeys []string, logger *logrus.Logger) error {
-	loaded := false
-
-	for _, keyPath := range hostKeys {
-		// Skip empty key paths (used in tests)
-		if keyPath == "" {
-			continue
-		}
-
-		// Check if host key file exists
-		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			logger.Warnf("Host key file %s not found, skipping", keyPath)
-			continue
-		}
-
-		// Load the host key using gliderlabs/ssh helper
-		if err := ssh.HostKeyFile(keyPath)(server); err != nil {
-			logger.Errorf("Failed to load host key %s: %v", keyPath, err)
-			continue
-		}
-
-		logger.Infof("Loaded host key: %s", keyPath)
-		loaded = true
-	}
-
-	// If no host keys were loaded and we have key paths, try to generate temporary key
-	if !loaded && len(hostKeys) > 0 {
-		// Only generate temporary key if we actually tried to load some
-		logger.Warn("No host keys loaded, using built-in key generation")
-		// For testing, we'll skip key generation - production will use real keys
-		return nil
-	}
-
-	return nil
 }
