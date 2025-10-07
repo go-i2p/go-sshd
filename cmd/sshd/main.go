@@ -60,8 +60,7 @@ advantages including single binary distribution and efficient resource usage.`,
 
 			// Test configuration and exit if requested
 			if testConfig {
-				fmt.Println("Configuration file is valid")
-				return nil
+				return validateAndReportConfig(cfg)
 			}
 
 			// Create and start the SSH server with config file for reload capability
@@ -93,4 +92,71 @@ advantages including single binary distribution and efficient resource usage.`,
 	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
 
 	return cmd
+}
+
+// validateAndReportConfig performs comprehensive configuration validation
+// and provides detailed reporting compatible with OpenSSH's config test mode.
+func validateAndReportConfig(cfg *config.Config) error {
+	// Perform comprehensive validation
+	result := cfg.Validate()
+
+	// Print detailed validation report
+	if result.Valid {
+		fmt.Println("Configuration file is valid")
+	} else {
+		fmt.Printf("Configuration validation failed with %d error(s)\n", result.ErrorCount)
+	}
+
+	// Report issues grouped by severity
+	if result.ErrorCount > 0 {
+		fmt.Printf("\nERRORS (%d):\n", result.ErrorCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationError {
+				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
+				if issue.Suggestion != "" {
+					fmt.Printf(" - %s", issue.Suggestion)
+				}
+				fmt.Println()
+			}
+		}
+	}
+
+	if result.WarnCount > 0 {
+		fmt.Printf("\nWARNINGS (%d):\n", result.WarnCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationWarning {
+				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
+				if issue.Suggestion != "" {
+					fmt.Printf(" - %s", issue.Suggestion)
+				}
+				fmt.Println()
+			}
+		}
+	}
+
+	if result.InfoCount > 0 {
+		fmt.Printf("\nINFORMATION (%d):\n", result.InfoCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationInfo {
+				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
+				if issue.Suggestion != "" {
+					fmt.Printf(" - %s", issue.Suggestion)
+				}
+				fmt.Println()
+			}
+		}
+	}
+
+	// Summary
+	if result.ErrorCount > 0 || result.WarnCount > 0 || result.InfoCount > 0 {
+		fmt.Printf("\nValidation Summary: %d error(s), %d warning(s), %d info message(s)\n",
+			result.ErrorCount, result.WarnCount, result.InfoCount)
+	}
+
+	// Exit with error code if configuration is invalid
+	if !result.Valid {
+		os.Exit(1)
+	}
+
+	return nil
 }
