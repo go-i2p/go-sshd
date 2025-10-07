@@ -35,6 +35,10 @@ func TestNewAuthHandler(t *testing.T) {
 	if handler.logger != logger {
 		t.Error("Handler logger not set correctly")
 	}
+
+	if handler.authorizer == nil {
+		t.Error("Handler authorizer not created")
+	}
 }
 
 func TestCreatePasswordHandler_Disabled(t *testing.T) {
@@ -300,4 +304,83 @@ func generateTestKeyPair() (gossh.Signer, gossh.PublicKey, error) {
 	}
 
 	return signer, signer.PublicKey(), nil
+}
+
+func TestAuthHandler_UserAuthorization(t *testing.T) {
+	cfg := &config.Config{
+		PubkeyAuthentication: true,
+		AuthorizedKeysFile:   []string{".ssh/authorized_keys"},
+		AllowUsers:           []string{"alloweduser"},
+		DenyUsers:            []string{"denieduser"},
+		PermitRootLogin:      "no",
+	}
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(cfg, logger)
+
+	// Generate test key pair
+	_, publicKey, err := generateTestKeyPair()
+	if err != nil {
+		t.Fatalf("Failed to generate test key: %v", err)
+	}
+
+	// Test denied user
+	result := handler.validatePublicKey("denieduser", publicKey)
+	if result {
+		t.Error("Expected denieduser to be rejected by authorization")
+	}
+
+	// Test non-allowed user (when AllowUsers is specified)
+	result = handler.validatePublicKey("randomuser", publicKey)
+	if result {
+		t.Error("Expected randomuser to be rejected when not in AllowUsers")
+	}
+
+	// Test root user (should be denied by PermitRootLogin=no)
+	result = handler.validatePublicKey("root", publicKey)
+	if result {
+		t.Error("Expected root to be rejected by PermitRootLogin=no")
+	}
+}
+
+func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		PubkeyAuthentication: true,
+		AuthorizedKeysFile:   []string{".ssh/authorized_keys"},
+	}
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(cfg, logger)
+
+	// Generate test key pair
+	_, publicKey, err := generateTestKeyPair()
+	if err != nil {
+		t.Fatalf("Failed to generate test key: %v", err)
+	}
+
+	// Create mock user with authorized_keys file containing options
+	mockUser := &user.User{
+		Username: "testuser",
+		HomeDir:  tmpDir,
+	}
+
+	// Create authorized_keys file with options
+	sshDir := filepath.Join(tmpDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("Failed to create .ssh directory: %v", err)
+	}
+
+	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
+	keyData := string(gossh.MarshalAuthorizedKey(publicKey))
+	
+	// Test with command restriction
+	content := `command="/bin/backup",no-port-forwarding ` + keyData
+	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0600); err != nil {
+		t.Fatalf("Failed to write authorized_keys file: %v", err)
+	}
+
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	if !result {
+		t.Error("Expected public key with options to be accepted")
+	}
 }

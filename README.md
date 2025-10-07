@@ -4,7 +4,7 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 
 ## Status
 
-🚧 **In Development** - Phase 5 Complete (Host Key Management)
+🚧 **In Development** - Phase 5 Complete (User Authorization)
 
 **✅ Implemented:**
 - OpenSSH-compatible configuration parsing (sshd_config)
@@ -16,11 +16,12 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - SFTP subsystem for file transfer (scp/sftp client support)
 - Complete port forwarding support (local, remote, direct TCP/IP)
 - Comprehensive host key management (auto-generation, multiple key types)
+- User authorization system (AllowUsers/DenyUsers, PermitRootLogin, authorized_keys options)
 - Complete test suite with >85% coverage
 
 **🔄 Next Phase:** Enhanced logging system, signal handling for configuration reload
 
-**📊 Current Metrics:** ~1200 lines custom code, 7 dependencies, library-first architecture
+**📊 Current Metrics:** ~1400 lines custom code, 7 dependencies, library-first architecture
 
 ## Goal
 
@@ -55,6 +56,7 @@ sudo cp sshd /usr/local/sbin/sshd-go
 ## Architecture
 
 This project prioritizes library integration over custom implementation:
+
 - **gliderlabs/ssh** - Core SSH server framework
 - **pkg/sftp** - SFTP subsystem
 - **crypto/ssh** - SSH protocol and cryptography

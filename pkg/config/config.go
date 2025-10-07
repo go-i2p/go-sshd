@@ -179,6 +179,34 @@ func (c *Config) parseDirective(directive string, args []string) error {
 		}
 		c.GatewayPorts = parseBool(args[0])
 
+	case "permitrootlogin":
+		if len(args) != 1 {
+			return fmt.Errorf("permitrootlogin requires exactly one argument")
+		}
+		value := strings.ToLower(args[0])
+		if value != "yes" && value != "no" && value != "prohibit-password" && value != "forced-commands-only" {
+			return fmt.Errorf("invalid permitrootlogin value: %s", args[0])
+		}
+		c.PermitRootLogin = value
+
+	case "allowusers":
+		if len(args) == 0 {
+			return fmt.Errorf("allowusers requires at least one argument")
+		}
+		c.AllowUsers = append(c.AllowUsers, args...)
+
+	case "denyusers":
+		if len(args) == 0 {
+			return fmt.Errorf("denyusers requires at least one argument")
+		}
+		c.DenyUsers = append(c.DenyUsers, args...)
+
+	case "authorizedkeysfile":
+		if len(args) == 0 {
+			return fmt.Errorf("authorizedkeysfile requires at least one argument")
+		}
+		c.AuthorizedKeysFile = args
+
 		// Add more directives as needed - keeping minimal for now
 	}
 

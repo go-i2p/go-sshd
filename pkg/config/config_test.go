@@ -168,3 +168,71 @@ func TestParseBool(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadAuthorizationConfig(t *testing.T) {
+	// Create temporary config file with authorization directives
+	configContent := `# Test SSH authorization config
+Port 2222
+PermitRootLogin no
+AllowUsers admin dev* @trusted.com
+DenyUsers baduser evil*
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u
+`
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test_sshd_config")
+
+	err := os.WriteFile(configFile, []byte(configContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	// Load and parse configuration
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify port
+	if cfg.Port != 2222 {
+		t.Errorf("Expected port 2222, got %d", cfg.Port)
+	}
+
+	// Verify PermitRootLogin
+	if cfg.PermitRootLogin != "no" {
+		t.Errorf("Expected PermitRootLogin 'no', got %q", cfg.PermitRootLogin)
+	}
+
+	// Verify AllowUsers
+	expectedAllowUsers := []string{"admin", "dev*", "@trusted.com"}
+	if len(cfg.AllowUsers) != len(expectedAllowUsers) {
+		t.Errorf("Expected %d AllowUsers entries, got %d", len(expectedAllowUsers), len(cfg.AllowUsers))
+	}
+	for i, expected := range expectedAllowUsers {
+		if i >= len(cfg.AllowUsers) || cfg.AllowUsers[i] != expected {
+			t.Errorf("Expected AllowUsers[%d]=%q, got %q", i, expected, cfg.AllowUsers[i])
+		}
+	}
+
+	// Verify DenyUsers
+	expectedDenyUsers := []string{"baduser", "evil*"}
+	if len(cfg.DenyUsers) != len(expectedDenyUsers) {
+		t.Errorf("Expected %d DenyUsers entries, got %d", len(expectedDenyUsers), len(cfg.DenyUsers))
+	}
+	for i, expected := range expectedDenyUsers {
+		if i >= len(cfg.DenyUsers) || cfg.DenyUsers[i] != expected {
+			t.Errorf("Expected DenyUsers[%d]=%q, got %q", i, expected, cfg.DenyUsers[i])
+		}
+	}
+
+	// Verify AuthorizedKeysFile
+	expectedKeysFiles := []string{".ssh/authorized_keys", "/etc/ssh/keys/%u"}
+	if len(cfg.AuthorizedKeysFile) != len(expectedKeysFiles) {
+		t.Errorf("Expected %d AuthorizedKeysFile entries, got %d", len(expectedKeysFiles), len(cfg.AuthorizedKeysFile))
+	}
+	for i, expected := range expectedKeysFiles {
+		if i >= len(cfg.AuthorizedKeysFile) || cfg.AuthorizedKeysFile[i] != expected {
+			t.Errorf("Expected AuthorizedKeysFile[%d]=%q, got %q", i, expected, cfg.AuthorizedKeysFile[i])
+		}
+	}
+}
