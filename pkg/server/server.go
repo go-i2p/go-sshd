@@ -141,6 +141,27 @@ func (s *Server) initializeSSHServer() error {
 		s.logger.Info("Port forwarding disabled by configuration")
 	}
 
+	// Configure agent forwarding handlers if agent forwarding is enabled
+	if s.config.AllowAgentForwarding {
+		agentHandler := handlers.NewAgentHandler(s.config, s.logger.GetLogrus())
+
+		// Add agent forwarding channel handler
+		if sshServer.ChannelHandlers == nil {
+			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+		}
+		sshServer.ChannelHandlers["auth-agent@openssh.com"] = agentHandler.CreateAgentForwardingHandler()
+
+		// Add agent forwarding request handler
+		if sshServer.RequestHandlers == nil {
+			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+		}
+		sshServer.RequestHandlers["auth-agent-req@openssh.com"] = agentHandler.CreateAgentRequestHandler()
+
+		s.logger.Info("SSH agent forwarding enabled")
+	} else {
+		s.logger.Info("SSH agent forwarding disabled by configuration")
+	}
+
 	s.ssh = sshServer
 	return nil
 }

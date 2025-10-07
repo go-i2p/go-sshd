@@ -103,10 +103,11 @@ type Config struct {
 	DenyUsers       []string `json:"deny_users"`
 
 	// Feature settings
-	Subsystem          map[string]string `json:"subsystem"`
-	AllowTcpForwarding bool              `json:"allow_tcp_forwarding"`
-	X11Forwarding      bool              `json:"x11_forwarding"`
-	GatewayPorts       bool              `json:"gateway_ports"`
+	Subsystem           map[string]string `json:"subsystem"`
+	AllowTcpForwarding  bool              `json:"allow_tcp_forwarding"`
+	AllowAgentForwarding bool              `json:"allow_agent_forwarding"`
+	X11Forwarding       bool              `json:"x11_forwarding"`
+	GatewayPorts        bool              `json:"gateway_ports"`
 
 	// Logging settings
 	LogLevel       string `json:"log_level"`
@@ -352,6 +353,12 @@ func (c *Config) validateForwarding(result *ValidationResult) {
 			"Consider restricting gateway ports in production environments")
 	}
 
+	if c.AllowAgentForwarding {
+		result.AddIssue(ValidationInfo, "AllowAgentForwarding",
+			"SSH agent forwarding enabled",
+			"Ensure agent forwarding is needed and secure")
+	}
+
 	if c.X11Forwarding {
 		result.AddIssue(ValidationInfo, "X11Forwarding",
 			"X11 forwarding enabled",
@@ -458,10 +465,11 @@ func Load(filename string) (*Config, error) {
 		PubkeyAuthentication:   true,
 		AuthorizedKeysFile:     []string{".ssh/authorized_keys"},
 		PermitRootLogin:        "prohibit-password",
-		Subsystem:              make(map[string]string),
-		AllowTcpForwarding:     true,
-		X11Forwarding:          false,
-		GatewayPorts:           false,
+		Subsystem:            make(map[string]string),
+		AllowTcpForwarding:   true,
+		AllowAgentForwarding: true,
+		X11Forwarding:        false,
+		GatewayPorts:         false,
 		LogLevel:               "INFO",
 		SyslogFacility:         "AUTH",
 		LogFile:                "", // Empty means stderr/stdout
@@ -573,6 +581,12 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("subsystem requires exactly two arguments")
 		}
 		c.Subsystem[args[0]] = args[1]
+
+	case "allowagentforwarding":
+		if len(args) != 1 {
+			return fmt.Errorf("allowagentforwarding requires exactly one argument")
+		}
+		c.AllowAgentForwarding = parseBool(args[0])
 
 	case "allowtcpforwarding":
 		if len(args) != 1 {
