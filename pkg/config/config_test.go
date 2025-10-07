@@ -30,6 +30,19 @@ func TestLoadDefaults(t *testing.T) {
 		t.Error("Expected PubkeyAuthentication default to be true")
 	}
 
+	// Verify logging defaults
+	if cfg.LogLevel != "INFO" {
+		t.Errorf("Expected default LogLevel INFO, got %s", cfg.LogLevel)
+	}
+
+	if cfg.SyslogFacility != "AUTH" {
+		t.Errorf("Expected default SyslogFacility AUTH, got %s", cfg.SyslogFacility)
+	}
+
+	if cfg.LogFile != "" {
+		t.Errorf("Expected default LogFile empty, got %s", cfg.LogFile)
+	}
+
 	if cfg.PermitRootLogin != "prohibit-password" {
 		t.Errorf("Expected default PermitRootLogin 'prohibit-password', got %q", cfg.PermitRootLogin)
 	}
@@ -234,5 +247,96 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u
 		if i >= len(cfg.AuthorizedKeysFile) || cfg.AuthorizedKeysFile[i] != expected {
 			t.Errorf("Expected AuthorizedKeysFile[%d]=%q, got %q", i, expected, cfg.AuthorizedKeysFile[i])
 		}
+	}
+}
+
+func TestLoggingDirectives(t *testing.T) {
+	// Create temporary config file with logging directives
+	tmpDir, err := os.MkdirTemp("", "sshd-config-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configFile := filepath.Join(tmpDir, "sshd_config")
+	configContent := `# Test logging directives
+LogLevel DEBUG2
+SyslogFacility LOCAL0
+LogFile /var/log/sshd.log
+Port 2222
+`
+
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	// Load and parse configuration
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify logging settings
+	if cfg.LogLevel != "DEBUG2" {
+		t.Errorf("Expected LogLevel 'DEBUG2', got %q", cfg.LogLevel)
+	}
+
+	if cfg.SyslogFacility != "LOCAL0" {
+		t.Errorf("Expected SyslogFacility 'LOCAL0', got %q", cfg.SyslogFacility)
+	}
+
+	if cfg.LogFile != "/var/log/sshd.log" {
+		t.Errorf("Expected LogFile '/var/log/sshd.log', got %q", cfg.LogFile)
+	}
+}
+
+func TestInvalidLoggingDirectives(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{
+			name:    "invalid log level",
+			content: "LogLevel INVALID\n",
+			wantErr: true,
+		},
+		{
+			name:    "invalid syslog facility",
+			content: "SyslogFacility INVALID\n",
+			wantErr: true,
+		},
+		{
+			name:    "valid log levels",
+			content: "LogLevel QUIET\nLogLevel FATAL\nLogLevel ERROR\nLogLevel INFO\nLogLevel VERBOSE\nLogLevel DEBUG\nLogLevel DEBUG1\nLogLevel DEBUG3\n",
+			wantErr: false,
+		},
+		{
+			name:    "valid syslog facilities",
+			content: "SyslogFacility DAEMON\nSyslogFacility USER\nSyslogFacility AUTH\nSyslogFacility AUTHPRIV\nSyslogFacility LOCAL7\n",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "sshd-config-test")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			configFile := filepath.Join(tmpDir, "sshd_config")
+			if err := os.WriteFile(configFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to create test config file: %v", err)
+			}
+
+			_, err = Load(configFile)
+			if tt.wantErr && err == nil {
+				t.Error("Expected error but got none")
+			} else if !tt.wantErr && err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+		})
 	}
 }

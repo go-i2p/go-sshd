@@ -4,7 +4,7 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 
 ## Status
 
-🚧 **In Development** - Phase 5 Complete (User Authorization)
+🚧 **In Development** - Phase 6 Complete (Enhanced Logging System)
 
 **✅ Implemented:**
 - OpenSSH-compatible configuration parsing (sshd_config)
@@ -17,11 +17,12 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Complete port forwarding support (local, remote, direct TCP/IP)
 - Comprehensive host key management (auto-generation, multiple key types)
 - User authorization system (AllowUsers/DenyUsers, PermitRootLogin, authorized_keys options)
+- Enhanced logging system with OpenSSH-compatible configuration (LogLevel, SyslogFacility, LogFile)
 - Complete test suite with >85% coverage
 
-**🔄 Next Phase:** Enhanced logging system, signal handling for configuration reload
+**🔄 Next Phase:** Signal handling for graceful shutdown and configuration reload
 
-**📊 Current Metrics:** ~1400 lines custom code, 7 dependencies, library-first architecture
+**📊 Current Metrics:** ~1600 lines custom code, 8 dependencies, library-first architecture
 
 ## Goal
 

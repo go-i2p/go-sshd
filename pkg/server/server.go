@@ -9,11 +9,11 @@ import (
 	"syscall"
 
 	"github.com/gliderlabs/ssh"
-	"github.com/sirupsen/logrus"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/handlers"
+	"github.com/go-i2p/go-sshd/pkg/logging"
 )
 
 // Server wraps gliderlabs/ssh with OpenSSH-compatible configuration.
@@ -21,7 +21,7 @@ import (
 type Server struct {
 	config *config.Config
 	ssh    *ssh.Server
-	logger *logrus.Logger
+	logger *logging.Logger
 }
 
 // New creates a new SSH server with the given configuration.
@@ -31,10 +31,11 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("configuration is required")
 	}
 
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-	})
+	// Create centralized logger from configuration
+	logger, err := logging.NewLogger(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
 
 	// Create gliderlabs/ssh server with basic options
 	sshServer := &ssh.Server{
@@ -67,24 +68,24 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Configure authentication handlers using the new AuthHandler
 	if cfg.PasswordAuthentication || cfg.PubkeyAuthentication {
-		authHandler := handlers.NewAuthHandler(cfg, logger)
+		authHandler := handlers.NewAuthHandler(cfg, logger.GetLogrus())
 		sshServer.PasswordHandler = authHandler.CreatePasswordHandler()
 		sshServer.PublicKeyHandler = authHandler.CreatePublicKeyHandler()
 	}
 
 	// Configure session handler using the new ShellHandler
-	shellHandler := handlers.NewShellHandler(logger)
+	shellHandler := handlers.NewShellHandler(logger.GetLogrus())
 	sshServer.Handler = shellHandler.CreateSessionHandler()
 
 	// Configure SFTP subsystem handler
-	sftpHandler := handlers.NewSFTPHandler(cfg, logger)
+	sftpHandler := handlers.NewSFTPHandler(cfg, logger.GetLogrus())
 	sshServer.SubsystemHandlers = map[string]ssh.SubsystemHandler{
 		"sftp": sftpHandler.CreateSubsystemHandler(),
 	}
 
 	// Configure port forwarding handlers if TCP forwarding is enabled
 	if cfg.AllowTcpForwarding {
-		forwardingHandler := handlers.NewForwardingHandler(cfg, logger)
+		forwardingHandler := handlers.NewForwardingHandler(cfg, logger.GetLogrus())
 
 		// Set local port forwarding callback
 		sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()

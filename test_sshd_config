@@ -1,0 +1,26 @@
+# Test SSH daemon configuration with logging
+Port 2222
+ListenAddress 127.0.0.1
+
+# Host keys - override defaults
+HostKey /tmp/ssh_host_rsa_key
+HostKey /tmp/ssh_host_ecdsa_key  
+HostKey /tmp/ssh_host_ed25519_key
+
+# Authentication
+PasswordAuthentication yes
+PubkeyAuthentication yes
+PermitRootLogin no
+
+# Logging configuration
+LogLevel DEBUG
+SyslogFacility AUTH
+LogFile /tmp/sshd_test.log
+
+# Features
+AllowTcpForwarding yes
+X11Forwarding no
+GatewayPorts no
+
+# SFTP subsystem
+Subsystem sftp internal-sftp

@@ -39,6 +39,11 @@ type Config struct {
 	AllowTcpForwarding bool              `json:"allow_tcp_forwarding"`
 	X11Forwarding      bool              `json:"x11_forwarding"`
 	GatewayPorts       bool              `json:"gateway_ports"`
+
+	// Logging settings
+	LogLevel       string `json:"log_level"`
+	SyslogFacility string `json:"syslog_facility"`
+	LogFile        string `json:"log_file"`
 }
 
 // Load reads and parses an OpenSSH sshd_config file.
@@ -59,6 +64,9 @@ func Load(filename string) (*Config, error) {
 		AllowTcpForwarding:     true,
 		X11Forwarding:          false,
 		GatewayPorts:           false,
+		LogLevel:               "INFO",
+		SyslogFacility:         "AUTH",
+		LogFile:                "", // Empty means stderr/stdout
 	}
 
 	// Open and parse configuration file
@@ -141,6 +149,13 @@ func (c *Config) parseDirective(directive string, args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("hostkey requires exactly one argument")
 		}
+		// If this is the first HostKey directive, clear the defaults
+		if len(c.HostKey) == 3 &&
+			c.HostKey[0] == "/etc/ssh/ssh_host_rsa_key" &&
+			c.HostKey[1] == "/etc/ssh/ssh_host_ecdsa_key" &&
+			c.HostKey[2] == "/etc/ssh/ssh_host_ed25519_key" {
+			c.HostKey = []string{}
+		}
 		c.HostKey = append(c.HostKey, args[0])
 
 	case "passwordauthentication":
@@ -207,6 +222,32 @@ func (c *Config) parseDirective(directive string, args []string) error {
 		}
 		c.AuthorizedKeysFile = args
 
+	case "loglevel":
+		if len(args) != 1 {
+			return fmt.Errorf("loglevel requires exactly one argument")
+		}
+		level := strings.ToUpper(args[0])
+		if !isValidLogLevel(level) {
+			return fmt.Errorf("invalid log level: %s", args[0])
+		}
+		c.LogLevel = level
+
+	case "syslogfacility":
+		if len(args) != 1 {
+			return fmt.Errorf("syslogfacility requires exactly one argument")
+		}
+		facility := strings.ToUpper(args[0])
+		if !isValidSyslogFacility(facility) {
+			return fmt.Errorf("invalid syslog facility: %s", args[0])
+		}
+		c.SyslogFacility = facility
+
+	case "logfile":
+		if len(args) != 1 {
+			return fmt.Errorf("logfile requires exactly one argument")
+		}
+		c.LogFile = args[0]
+
 		// Add more directives as needed - keeping minimal for now
 	}
 
@@ -222,4 +263,34 @@ func parseBool(value string) bool {
 	default:
 		return false
 	}
+}
+
+// isValidLogLevel validates OpenSSH log levels.
+// OpenSSH supports: QUIET, FATAL, ERROR, INFO, VERBOSE, DEBUG, DEBUG1, DEBUG2, DEBUG3
+func isValidLogLevel(level string) bool {
+	validLevels := []string{
+		"QUIET", "FATAL", "ERROR", "INFO", "VERBOSE",
+		"DEBUG", "DEBUG1", "DEBUG2", "DEBUG3",
+	}
+	for _, valid := range validLevels {
+		if level == valid {
+			return true
+		}
+	}
+	return false
+}
+
+// isValidSyslogFacility validates OpenSSH syslog facilities.
+// OpenSSH supports standard syslog facilities
+func isValidSyslogFacility(facility string) bool {
+	validFacilities := []string{
+		"DAEMON", "USER", "AUTH", "LOCAL0", "LOCAL1", "LOCAL2", "LOCAL3",
+		"LOCAL4", "LOCAL5", "LOCAL6", "LOCAL7", "AUTHPRIV",
+	}
+	for _, valid := range validFacilities {
+		if facility == valid {
+			return true
+		}
+	}
+	return false
 }

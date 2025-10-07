@@ -12,6 +12,9 @@ func TestNewServer(t *testing.T) {
 		HostKey:                []string{}, // Empty to avoid file system dependencies
 		PasswordAuthentication: false,
 		PubkeyAuthentication:   false,
+		LogLevel:               "INFO",
+		SyslogFacility:         "AUTH",
+		LogFile:                "",
 	}
 
 	server, err := New(cfg)
@@ -65,6 +68,9 @@ func TestServerConfiguration(t *testing.T) {
 				HostKey:                []string{},
 				PasswordAuthentication: false,
 				PubkeyAuthentication:   false,
+				LogLevel:               "INFO",
+				SyslogFacility:         "AUTH",
+				LogFile:                "",
 			}
 
 			server, err := New(cfg)
@@ -86,6 +92,9 @@ func TestServerLifecycle(t *testing.T) {
 		HostKey:                []string{},
 		PasswordAuthentication: false,
 		PubkeyAuthentication:   false,
+		LogLevel:               "INFO",
+		SyslogFacility:         "AUTH",
+		LogFile:                "",
 	}
 
 	server, err := New(cfg)
