@@ -336,7 +336,7 @@ func (c *Config) validateLogging(result *ValidationResult) {
 		}
 
 		// Check if we can write to the log file
-		if _, err := os.OpenFile(c.LogFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644); err != nil {
+		if _, err := os.OpenFile(c.LogFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644); err != nil {
 			result.AddIssue(ValidationWarning, "LogFile",
 				fmt.Sprintf("Cannot write to log file: %s (%v)", c.LogFile, err),
 				"Check directory permissions and disk space")

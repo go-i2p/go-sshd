@@ -415,7 +415,6 @@ func TestInvalidCommandLineArgs(t *testing.T) {
 func TestConfigFileDefaultPath(t *testing.T) {
 	// Test with test flag to avoid actually starting server
 	output, err := executeCommand("--test")
-
 	// Should not fail even if default config doesn't exist (uses built-in defaults)
 	if err != nil {
 		// Check if it's a validation error vs a file not found error

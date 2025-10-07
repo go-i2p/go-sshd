@@ -116,7 +116,7 @@ func (l *Logger) setOutput(logFile string) error {
 	}
 
 	// Open log file for writing
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file %q: %w", logFile, err)
 	}

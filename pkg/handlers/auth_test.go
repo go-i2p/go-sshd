@@ -122,13 +122,13 @@ func TestValidatePublicKey_WithTestKey(t *testing.T) {
 
 	// Create authorized_keys file with our test key
 	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatalf("Failed to create .ssh directory: %v", err)
 	}
 
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
 	keyData := string(gossh.MarshalAuthorizedKey(publicKey))
-	if err := os.WriteFile(authorizedKeysPath, []byte(keyData), 0600); err != nil {
+	if err := os.WriteFile(authorizedKeysPath, []byte(keyData), 0o600); err != nil {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
@@ -167,13 +167,13 @@ func TestValidatePublicKey_WrongKey(t *testing.T) {
 	}
 
 	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatalf("Failed to create .ssh directory: %v", err)
 	}
 
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
 	keyData := string(gossh.MarshalAuthorizedKey(publicKey1))
-	if err := os.WriteFile(authorizedKeysPath, []byte(keyData), 0600); err != nil {
+	if err := os.WriteFile(authorizedKeysPath, []byte(keyData), 0o600); err != nil {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
@@ -230,12 +230,12 @@ func TestCheckAuthorizedKeysFile_EmptyFile(t *testing.T) {
 
 	// Create empty authorized_keys file
 	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatalf("Failed to create .ssh directory: %v", err)
 	}
 
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
-	if err := os.WriteFile(authorizedKeysPath, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(authorizedKeysPath, []byte(""), 0o600); err != nil {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestCheckAuthorizedKeysFile_WithComments(t *testing.T) {
 
 	// Create authorized_keys with comments and empty lines
 	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatalf("Failed to create .ssh directory: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestCheckAuthorizedKeysFile_WithComments(t *testing.T) {
 ` + keyData + `
 # Final comment
 `
-	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
@@ -366,7 +366,7 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 
 	// Create authorized_keys file with options
 	sshDir := filepath.Join(tmpDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatalf("Failed to create .ssh directory: %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 
 	// Test with command restriction
 	content := `command="/bin/backup",no-port-forwarding ` + keyData
-	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 

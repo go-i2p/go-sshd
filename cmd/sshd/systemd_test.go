@@ -98,7 +98,7 @@ func TestInstallationScript(t *testing.T) {
 	}
 
 	mode := info.Mode()
-	if mode&0111 == 0 {
+	if mode&0o111 == 0 {
 		t.Error("Installation script is not executable")
 	}
 

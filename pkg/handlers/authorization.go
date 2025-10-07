@@ -89,7 +89,7 @@ func (ua *UserAuthorizer) IsUserAllowed(username, remoteAddr string) bool {
 
 // IsRootLoginAllowed checks if root login is permitted based on PermitRootLogin setting.
 // Options: yes, no, prohibit-password, forced-commands-only
-func (ua *UserAuthorizer) IsRootLoginAllowed(username string, authMethod string) bool {
+func (ua *UserAuthorizer) IsRootLoginAllowed(username, authMethod string) bool {
 	if username != "root" {
 		return true // Not root, allow
 	}

@@ -324,7 +324,6 @@ func TestMatchUserPattern(t *testing.T) {
 func TestParseAuthorizedKeyOptions_NoOptions(t *testing.T) {
 	line := "ssh-rsa AAAAB3NzaC1yc2EAAAA... user@host"
 	keyPart, options, err := ParseAuthorizedKeyOptions(line)
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -345,7 +344,6 @@ func TestParseAuthorizedKeyOptions_NoOptions(t *testing.T) {
 func TestParseAuthorizedKeyOptions_WithCommand(t *testing.T) {
 	line := `command="/bin/backup" ssh-rsa AAAAB3NzaC1yc2EAAAA... backup@host`
 	keyPart, options, err := ParseAuthorizedKeyOptions(line)
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -362,7 +360,6 @@ func TestParseAuthorizedKeyOptions_WithCommand(t *testing.T) {
 func TestParseAuthorizedKeyOptions_MultipleOptions(t *testing.T) {
 	line := `no-port-forwarding,no-pty,command="/bin/restricted" ssh-rsa AAAAB3NzaC1yc2EAAAA... restricted@host`
 	keyPart, options, err := ParseAuthorizedKeyOptions(line)
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -387,7 +384,6 @@ func TestParseAuthorizedKeyOptions_MultipleOptions(t *testing.T) {
 func TestParseAuthorizedKeyOptions_FromRestriction(t *testing.T) {
 	line := `from="192.168.1.0/24,10.0.0.1" ssh-rsa AAAAB3NzaC1yc2EAAAA... user@host`
 	keyPart, options, err := ParseAuthorizedKeyOptions(line)
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -411,7 +407,6 @@ func TestParseAuthorizedKeyOptions_FromRestriction(t *testing.T) {
 func TestParseAuthorizedKeyOptions_QuotedValues(t *testing.T) {
 	line := `command="echo \"hello world\"",environment="HOME=/tmp" ssh-rsa AAAAB3NzaC1yc2EAAAA... user@host`
 	keyPart, options, err := ParseAuthorizedKeyOptions(line)
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

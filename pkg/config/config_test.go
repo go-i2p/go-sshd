@@ -62,7 +62,7 @@ Subsystem sftp /usr/lib/openssh/sftp-server
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "test_sshd_config")
 
-	err := os.WriteFile(configFile, []byte(configContent), 0644)
+	err := os.WriteFile(configFile, []byte(configContent), 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestParseDirectiveErrors(t *testing.T) {
 			tmpDir := t.TempDir()
 			configFile := filepath.Join(tmpDir, "test_config")
 
-			err := os.WriteFile(configFile, []byte(tt.content), 0644)
+			err := os.WriteFile(configFile, []byte(tt.content), 0o644)
 			if err != nil {
 				t.Fatalf("Failed to create test config: %v", err)
 			}
@@ -196,7 +196,7 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "test_sshd_config")
 
-	err := os.WriteFile(configFile, []byte(configContent), 0644)
+	err := os.WriteFile(configFile, []byte(configContent), 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
@@ -267,7 +267,7 @@ LogFile /var/log/sshd.log
 Port 2222
 `
 
-	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configFile, []byte(configContent), 0o644); err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestInvalidLoggingDirectives(t *testing.T) {
 			defer os.RemoveAll(tmpDir)
 
 			configFile := filepath.Join(tmpDir, "sshd_config")
-			if err := os.WriteFile(configFile, []byte(tt.content), 0644); err != nil {
+			if err := os.WriteFile(configFile, []byte(tt.content), 0o644); err != nil {
 				t.Fatalf("Failed to create test config file: %v", err)
 			}
 
@@ -470,7 +470,7 @@ func TestConfig_ValidateHostKeys(t *testing.T) {
 	// Create temporary files for testing
 	tmpDir := t.TempDir()
 	existingKey := filepath.Join(tmpDir, "ssh_host_rsa_key")
-	if err := os.WriteFile(existingKey, []byte("fake key"), 0600); err != nil {
+	if err := os.WriteFile(existingKey, []byte("fake key"), 0o600); err != nil {
 		t.Fatalf("Failed to create test key file: %v", err)
 	}
 
@@ -624,7 +624,7 @@ func TestConfig_ValidateLogging(t *testing.T) {
 func TestConfig_ValidateSubsystems(t *testing.T) {
 	tmpDir := t.TempDir()
 	existingBinary := filepath.Join(tmpDir, "sftp-server")
-	if err := os.WriteFile(existingBinary, []byte("fake binary"), 0755); err != nil {
+	if err := os.WriteFile(existingBinary, []byte("fake binary"), 0o755); err != nil {
 		t.Fatalf("Failed to create test binary: %v", err)
 	}
 
@@ -700,7 +700,7 @@ func TestConfig_Validate_Integration(t *testing.T) {
 	// Test the full Validate method with a realistic configuration
 	tmpDir := t.TempDir()
 	hostKey := filepath.Join(tmpDir, "ssh_host_ed25519_key")
-	if err := os.WriteFile(hostKey, []byte("fake key"), 0600); err != nil {
+	if err := os.WriteFile(hostKey, []byte("fake key"), 0o600); err != nil {
 		t.Fatalf("Failed to create test key: %v", err)
 	}
 

@@ -124,7 +124,7 @@ func createTempConfig(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "sshd_config")
 
-	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
 		t.Fatalf("Failed to create temp config file: %v", err)
 	}
 
@@ -233,7 +233,7 @@ Port 2224
 PasswordAuthentication yes
 LogLevel DEBUG
 `
-	if err := os.WriteFile(configFile, []byte(newConfigContent), 0644); err != nil {
+	if err := os.WriteFile(configFile, []byte(newConfigContent), 0o644); err != nil {
 		t.Fatalf("Failed to update config file: %v", err)
 	}
 
