@@ -226,13 +226,13 @@ func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile strin
 		// Compare keys by comparing their wire format (most reliable method)
 		if string(authorizedKey.Marshal()) == string(clientKey.Marshal()) {
 			a.logger.Debugf("Matching public key found in %s:%d for user %s", filePath, lineNum, userInfo.Username)
-			
+
 			// Validate key options if present
 			if options != nil && !a.validateKeyOptions(options, userInfo.Username) {
 				a.logger.Warnf("Public key found but options validation failed for user %s", userInfo.Username)
 				return false
 			}
-			
+
 			return true
 		}
 	}
@@ -251,20 +251,20 @@ func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username
 	if options.Command != "" {
 		a.logger.Debugf("Key has command restriction for user %s: %s", username, options.Command)
 	}
-	
+
 	if len(options.From) > 0 {
 		a.logger.Debugf("Key has source address restrictions for user %s: %v", username, options.From)
 		// TODO: Validate source address - would need access to remote address in this context
 	}
-	
+
 	if options.NoPortForwarding {
 		a.logger.Debugf("Key disables port forwarding for user %s", username)
 	}
-	
+
 	if options.NoPTY {
 		a.logger.Debugf("Key disables PTY for user %s", username)
 	}
-	
+
 	// For basic implementation, accept all keys - restrictions would be enforced
 	// in session/channel handlers based on stored options
 	return true

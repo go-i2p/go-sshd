@@ -372,7 +372,7 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 
 	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
 	keyData := string(gossh.MarshalAuthorizedKey(publicKey))
-	
+
 	// Test with command restriction
 	content := `command="/bin/backup",no-port-forwarding ` + keyData
 	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0600); err != nil {

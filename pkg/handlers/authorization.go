@@ -23,10 +23,10 @@ type AuthorizedKeyOptions struct {
 	// Restrict source addresses
 	From []string
 	// Disable features
-	NoPortForwarding bool
-	NoPTY            bool
-	NoUserRC         bool
-	NoX11Forwarding  bool
+	NoPortForwarding  bool
+	NoPTY             bool
+	NoUserRC          bool
+	NoX11Forwarding   bool
 	NoAgentForwarding bool
 	// Force PTY allocation
 	PTY bool
@@ -178,7 +178,7 @@ func ParseAuthorizedKeyOptions(line string) (string, *AuthorizedKeyOptions, erro
 	}
 
 	firstPart := parts[0]
-	hasOptions := strings.Contains(firstPart, "=") || 
+	hasOptions := strings.Contains(firstPart, "=") ||
 		strings.Contains(firstPart, "command") ||
 		strings.Contains(firstPart, "no-port-forwarding") ||
 		strings.Contains(firstPart, "no-pty") ||
@@ -247,7 +247,7 @@ func parseCommaSeparated(s string) []string {
 	var result []string
 	var current strings.Builder
 	inQuotes := false
-	
+
 	for _, r := range s {
 		switch r {
 		case '"':
@@ -264,11 +264,11 @@ func parseCommaSeparated(s string) []string {
 			current.WriteRune(r)
 		}
 	}
-	
+
 	if current.Len() > 0 {
 		result = append(result, current.String())
 	}
-	
+
 	return result
 }
 
@@ -279,7 +279,7 @@ func parseOption(opt string, options *AuthorizedKeyOptions) error {
 		parts := strings.SplitN(opt, "=", 2)
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-		
+
 		// Remove quotes if present
 		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
 			value = value[1 : len(value)-1]
