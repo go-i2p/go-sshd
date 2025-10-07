@@ -91,7 +91,7 @@ func TestValidatePublicKey_NoUser(t *testing.T) {
 		t.Fatalf("Failed to generate test key: %v", err)
 	}
 
-	result := handler.validatePublicKey("nonexistentuser123456", publicKey)
+	result := handler.validatePublicKey("nonexistentuser123456", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail for non-existent user")
 	}
@@ -133,7 +133,7 @@ func TestValidatePublicKey_WithTestKey(t *testing.T) {
 	}
 
 	// Test the key validation function directly
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key to be accepted from authorized_keys file")
 	}
@@ -178,7 +178,7 @@ func TestValidatePublicKey_WrongKey(t *testing.T) {
 	}
 
 	// Try to authenticate with key2 (should fail)
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey2)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey2, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected public key authentication to fail with wrong key")
 	}
@@ -202,7 +202,7 @@ func TestCheckAuthorizedKeysFile_NoFile(t *testing.T) {
 		HomeDir:  "/nonexistent",
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail when authorized_keys file doesn't exist")
 	}
@@ -239,7 +239,7 @@ func TestCheckAuthorizedKeysFile_EmptyFile(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail with empty authorized_keys file")
 	}
@@ -283,7 +283,7 @@ func TestCheckAuthorizedKeysFile_WithComments(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key to be found despite comments and empty lines")
 	}
@@ -324,19 +324,19 @@ func TestAuthHandler_UserAuthorization(t *testing.T) {
 	}
 
 	// Test denied user
-	result := handler.validatePublicKey("denieduser", publicKey)
+	result := handler.validatePublicKey("denieduser", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected denieduser to be rejected by authorization")
 	}
 
 	// Test non-allowed user (when AllowUsers is specified)
-	result = handler.validatePublicKey("randomuser", publicKey)
+	result = handler.validatePublicKey("randomuser", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected randomuser to be rejected when not in AllowUsers")
 	}
 
 	// Test root user (should be denied by PermitRootLogin=no)
-	result = handler.validatePublicKey("root", publicKey)
+	result = handler.validatePublicKey("root", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected root to be rejected by PermitRootLogin=no")
 	}
@@ -379,7 +379,7 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey)
+	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key with options to be accepted")
 	}

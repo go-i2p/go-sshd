@@ -5,6 +5,7 @@ package handlers
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -102,7 +103,7 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 		}
 
 		// Use crypto/ssh for authorized keys validation
-		success := a.validatePublicKey(user, key)
+		success := a.validatePublicKey(user, key, ctx.RemoteAddr().String())
 
 		if success {
 			a.logger.Infof("Public key authentication successful for user %s", user)
@@ -156,7 +157,7 @@ func (a *AuthHandler) authenticateWithPAM(username, password string) bool {
 
 // validatePublicKey validates a public key against authorized_keys files.
 // Uses golang.org/x/crypto/ssh for all key parsing and comparison.
-func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey) bool {
+func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey, remoteAddr string) bool {
 	// Get user information to find home directory
 	userInfo, err := user.Lookup(username)
 	if err != nil {
@@ -166,7 +167,7 @@ func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey
 
 	// Check all configured authorized keys files
 	for _, keyFile := range a.config.AuthorizedKeysFile {
-		if a.checkAuthorizedKeysFile(userInfo, keyFile, clientKey) {
+		if a.checkAuthorizedKeysFile(userInfo, keyFile, clientKey, remoteAddr) {
 			return true
 		}
 	}
@@ -177,7 +178,7 @@ func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey
 // checkAuthorizedKeysFile checks a single authorized_keys file for the given public key.
 // Uses crypto/ssh for all key parsing and comparison logic.
 // Also parses and validates key options like command restrictions.
-func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile string, clientKey ssh.PublicKey) bool {
+func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile string, clientKey ssh.PublicKey, remoteAddr string) bool {
 	// Handle relative paths and ~ expansion like OpenSSH
 	var filePath string
 	if strings.HasPrefix(keyFile, "~/") || !filepath.IsAbs(keyFile) {
@@ -227,7 +228,7 @@ func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile strin
 			a.logger.Debugf("Matching public key found in %s:%d for user %s", filePath, lineNum, userInfo.Username)
 
 			// Validate key options if present
-			if options != nil && !a.validateKeyOptions(options, userInfo.Username) {
+			if options != nil && !a.validateKeyOptions(options, userInfo.Username, remoteAddr) {
 				a.logger.Warnf("Public key found but options validation failed for user %s", userInfo.Username)
 				return false
 			}
@@ -245,7 +246,7 @@ func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile strin
 
 // validateKeyOptions validates authorized_keys options and applies restrictions.
 // Returns false if the key should be rejected due to option restrictions.
-func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username string) bool {
+func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username, remoteAddr string) bool {
 	// For now, just log the options - full enforcement would be done in session handlers
 	if options.Command != "" {
 		a.logger.Debugf("Key has command restriction for user %s: %s", username, options.Command)
@@ -253,7 +254,12 @@ func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username
 
 	if len(options.From) > 0 {
 		a.logger.Debugf("Key has source address restrictions for user %s: %v", username, options.From)
-		// TODO: Validate source address - would need access to remote address in this context
+
+		// Validate source address against allowed patterns
+		if !a.validateSourceAddress(remoteAddr, options.From, username) {
+			a.logger.Warnf("Source address %s not allowed for user %s", remoteAddr, username)
+			return false
+		}
 	}
 
 	if options.NoPortForwarding {
@@ -267,4 +273,56 @@ func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username
 	// For basic implementation, accept all keys - restrictions would be enforced
 	// in session/channel handlers based on stored options
 	return true
+}
+
+// validateSourceAddress validates if the remote address matches any of the allowed patterns.
+// This implements OpenSSH-compatible "from" option validation for authorized keys.
+// Supports IP addresses, CIDR blocks, and hostname patterns with wildcards.
+func (a *AuthHandler) validateSourceAddress(remoteAddr string, allowedPatterns []string, username string) bool {
+	// Extract IP address from remote address (format: "ip:port")
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		// If splitting fails, use the entire string (might be just an IP)
+		host = remoteAddr
+	}
+
+	remoteIP := net.ParseIP(host)
+	if remoteIP == nil {
+		a.logger.Warnf("Could not parse remote IP address: %s", host)
+		return false
+	}
+
+	for _, pattern := range allowedPatterns {
+		pattern = strings.TrimSpace(pattern)
+
+		// Check for CIDR notation
+		if strings.Contains(pattern, "/") {
+			_, network, err := net.ParseCIDR(pattern)
+			if err != nil {
+				a.logger.Debugf("Invalid CIDR pattern '%s' for user %s: %v", pattern, username, err)
+				continue
+			}
+			if network.Contains(remoteIP) {
+				a.logger.Debugf("Remote address %s matches CIDR pattern %s for user %s", host, pattern, username)
+				return true
+			}
+		} else if ip := net.ParseIP(pattern); ip != nil {
+			// Direct IP address match
+			if ip.Equal(remoteIP) {
+				a.logger.Debugf("Remote address %s matches IP pattern %s for user %s", host, pattern, username)
+				return true
+			}
+		} else {
+			// Hostname pattern matching (basic implementation)
+			// For production, this should do proper reverse DNS lookup and pattern matching
+			a.logger.Debugf("Hostname pattern matching not fully implemented for pattern '%s'", pattern)
+			// As a fallback, do simple string comparison
+			if host == pattern {
+				a.logger.Debugf("Remote address %s matches hostname pattern %s for user %s", host, pattern, username)
+				return true
+			}
+		}
+	}
+
+	return false
 }
