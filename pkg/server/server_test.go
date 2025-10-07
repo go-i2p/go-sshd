@@ -1,7 +1,10 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 )
@@ -114,4 +117,182 @@ func TestServerLifecycle(t *testing.T) {
 
 	// Note: We don't test Start() here as it would bind to a port
 	// and block. Integration tests would handle actual server start/stop.
+}
+
+// Helper function to create a temporary config file
+func createTempConfig(t *testing.T, content string) string {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "sshd_config")
+	
+	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create temp config file: %v", err)
+	}
+	
+	return configFile
+}
+
+func TestNewWithConfigFile(t *testing.T) {
+	configContent := `
+Port 2223
+PasswordAuthentication yes
+PubkeyAuthentication no
+LogLevel ERROR
+`
+	configFile := createTempConfig(t, configContent)
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Override host keys to empty for testing (avoid file system dependencies)
+	cfg.HostKey = []string{}
+
+	server, err := NewWithConfigFile(cfg, configFile)
+	if err != nil {
+		t.Fatalf("Failed to create server with config file: %v", err)
+	}
+	defer server.Stop()
+
+	if server.configFile != configFile {
+		t.Errorf("Config file path not stored correctly: got %s, want %s", server.configFile, configFile)
+	}
+
+	if server.config.Port != 2223 {
+		t.Errorf("Config not loaded correctly: got port %d, want 2223", server.config.Port)
+	}
+
+	if server.signalHandler == nil {
+		t.Error("Signal handler not initialized")
+	}
+}
+
+func TestSignalHandling(t *testing.T) {
+	cfg := &config.Config{
+		Port:                   0, // Use port 0 for testing
+		HostKey:                []string{},
+		PasswordAuthentication: false,
+		PubkeyAuthentication:   false,
+		LogLevel:               "ERROR",
+	}
+
+	server, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	// Test that signal handler context is available
+	ctx := server.signalHandler.Context()
+	if ctx == nil {
+		t.Error("Signal handler context is nil")
+	}
+
+	// Test programmatic shutdown
+	server.signalHandler.Shutdown()
+
+	// Verify context is cancelled
+	select {
+	case <-ctx.Done():
+		// Expected behavior
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Context should be cancelled after shutdown")
+	}
+}
+
+func TestConfigurationReload(t *testing.T) {
+	configContent := `
+Port 2224
+PasswordAuthentication yes
+LogLevel INFO
+`
+	configFile := createTempConfig(t, configContent)
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Override host keys to empty for testing (avoid file system dependencies)
+	cfg.HostKey = []string{}
+
+	server, err := NewWithConfigFile(cfg, configFile)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	// Verify initial config
+	if server.config.LogLevel != "INFO" {
+		t.Errorf("Initial log level incorrect: got %s, want INFO", server.config.LogLevel)
+	}
+
+	// Update config file
+	newConfigContent := `
+Port 2224
+PasswordAuthentication yes
+LogLevel DEBUG
+`
+	if err := os.WriteFile(configFile, []byte(newConfigContent), 0644); err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+
+	// Test configuration reload
+	if err := server.reloadConfiguration(); err != nil {
+		t.Errorf("Failed to reload configuration: %v", err)
+	}
+
+	// Verify config was reloaded
+	if server.config.LogLevel != "DEBUG" {
+		t.Errorf("Log level not updated after reload: got %s, want DEBUG", server.config.LogLevel)
+	}
+}
+
+func TestConfigurationReloadWithoutFile(t *testing.T) {
+	cfg := &config.Config{
+		Port:     2225,
+		LogLevel: "INFO",
+	}
+
+	server, err := New(cfg) // No config file specified
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	// Test that reload fails when no config file is specified
+	err = server.reloadConfiguration()
+	if err == nil {
+		t.Error("Expected error when reloading without config file")
+	}
+
+	expectedMsg := "no config file specified for reload"
+	if err.Error() != expectedMsg {
+		t.Errorf("Unexpected error message: got %s, want %s", err.Error(), expectedMsg)
+	}
+}
+
+func TestServerStop(t *testing.T) {
+	cfg := &config.Config{
+		Port:     0,
+		LogLevel: "ERROR",
+	}
+
+	server, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Test that server can be stopped
+	if err := server.Stop(); err != nil {
+		t.Errorf("Failed to stop server: %v", err)
+	}
+
+	// Test that context is cancelled after stop
+	select {
+	case <-server.signalHandler.Context().Done():
+		// Expected behavior
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Context should be cancelled after stop")
+	}
 }

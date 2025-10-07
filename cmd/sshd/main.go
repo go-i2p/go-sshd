@@ -64,11 +64,18 @@ advantages including single binary distribution and efficient resource usage.`,
 				return nil
 			}
 
-			// Create and start the SSH server
-			srv, err := server.New(cfg)
+			// Create and start the SSH server with config file for reload capability
+			srv, err := server.NewWithConfigFile(cfg, configFile)
 			if err != nil {
 				return fmt.Errorf("failed to create server: %w", err)
 			}
+
+			// Ensure server is properly stopped on exit
+			defer func() {
+				if stopErr := srv.Stop(); stopErr != nil {
+					fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
+				}
+			}()
 
 			// Start server in daemon mode or foreground
 			if daemon {
