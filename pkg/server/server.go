@@ -157,7 +157,7 @@ func (s *Server) Start() error {
 
 	// Use context to control server lifecycle
 	ctx := s.signalHandler.Context()
-	
+
 	// Start server in a goroutine so we can handle context cancellation
 	serverErr := make(chan error, 1)
 	go func() {
@@ -252,20 +252,20 @@ func (s *Server) reloadConfiguration() error {
 // This method can be called programmatically to shutdown the server.
 func (s *Server) Stop() error {
 	s.logger.Info("Stopping SSH server...")
-	
+
 	// Trigger shutdown
 	s.signalHandler.Shutdown()
-	
+
 	// Close the SSH server
 	if s.ssh != nil {
 		if err := s.ssh.Close(); err != nil {
 			s.logger.Errorf("Error closing SSH server: %v", err)
 		}
 	}
-	
+
 	// Stop signal handler
 	s.signalHandler.Stop()
-	
+
 	s.logger.Info("SSH server stopped")
 	return nil
 }

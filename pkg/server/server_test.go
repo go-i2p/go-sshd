@@ -123,11 +123,11 @@ func TestServerLifecycle(t *testing.T) {
 func createTempConfig(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "sshd_config")
-	
+
 	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to create temp config file: %v", err)
 	}
-	
+
 	return configFile
 }
 

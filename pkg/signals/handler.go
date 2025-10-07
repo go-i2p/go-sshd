@@ -34,7 +34,7 @@ func NewHandler() *Handler {
 	// Register signal handlers
 	// SIGTERM and SIGINT for graceful shutdown
 	signal.Notify(h.shutdownSignals, syscall.SIGTERM, syscall.SIGINT)
-	
+
 	// SIGHUP for configuration reload (standard Unix daemon behavior)
 	signal.Notify(h.reloadSignals, syscall.SIGHUP)
 
