@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
+	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/server"
 	"github.com/spf13/cobra"
 )
@@ -36,6 +37,7 @@ func newRootCmd() *cobra.Command {
 		testConfig  bool
 		showVersion bool
 		inetdMode   bool
+		generateKeys bool
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +66,11 @@ advantages including single binary distribution and efficient resource usage.`,
 			// Test configuration and exit if requested
 			if testConfig {
 				return validateAndReportConfig(cfg)
+			}
+
+			// Generate host keys and exit if requested
+			if generateKeys {
+				return generateHostKeys(cfg)
 			}
 
 			// Check for inetd mode (socket activation)
@@ -99,6 +106,7 @@ advantages including single binary distribution and efficient resource usage.`,
 	cmd.Flags().BoolVarP(&testConfig, "test", "t", false, "test configuration and exit")
 	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
 	cmd.Flags().BoolVarP(&inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
+	cmd.Flags().BoolVarP(&generateKeys, "generate-keys", "G", false, "generate host keys and exit")
 
 	return cmd
 }
@@ -224,5 +232,36 @@ func (c *stdinoutConn) SetReadDeadline(t time.Time) error {
 
 func (c *stdinoutConn) SetWriteDeadline(t time.Time) error {
 	// stdin/stdout don't support deadlines
+	return nil
+}
+
+// generateHostKeys generates SSH host keys for the server.
+// This is used by the systemd keygen service to generate keys on first install.
+func generateHostKeys(cfg *config.Config) error {
+	// Use configured host keys or fall back to defaults
+	keyPaths := cfg.HostKey
+	if len(keyPaths) == 0 {
+		keyPaths = []string{
+			"/etc/ssh/ssh_host_rsa_key",
+			"/etc/ssh/ssh_host_ecdsa_key", 
+			"/etc/ssh/ssh_host_ed25519_key",
+		}
+	}
+
+	manager := crypto.NewHostKeyManager(keyPaths)
+	
+	// Generate all configured host keys
+	_, err := manager.LoadOrGenerateKeys()
+	if err != nil {
+		return fmt.Errorf("failed to generate host keys: %w", err)
+	}
+
+	fmt.Printf("Host keys generated successfully:\n")
+	for _, keyPath := range keyPaths {
+		if keyPath != "" {
+			fmt.Printf("  - %s\n", keyPath)
+		}
+	}
+
 	return nil
 }

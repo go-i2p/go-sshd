@@ -145,7 +145,36 @@ func TestInetdModeFlag(t *testing.T) {
 	// These are better suited for integration tests
 }
 
-// containsString checks if a string contains a substring (case-sensitive)
+// TestKeyGenService validates the key generation service configuration
+func TestKeyGenService(t *testing.T) {
+	keygenContent, err := os.ReadFile("../../systemd/sshd-go-keygen.service")
+	if err != nil {
+		t.Fatalf("Failed to read sshd-go-keygen.service: %v", err)
+	}
+
+	content := string(keygenContent)
+
+	requiredStrings := []string{
+		"[Unit]",
+		"[Service]",
+		"Type=oneshot",
+		"ExecStart=/usr/local/sbin/sshd-go -G", // Should use -G flag, not -t
+		"ConditionFileNotEmpty=|!/etc/ssh/ssh_host_rsa_key",
+		"ConditionFileNotEmpty=|!/etc/ssh/ssh_host_ecdsa_key",
+		"ConditionFileNotEmpty=|!/etc/ssh/ssh_host_ed25519_key",
+	}
+
+	for _, required := range requiredStrings {
+		if !containsString(content, required) {
+			t.Errorf("sshd-go-keygen.service missing required content: %s", required)
+		}
+	}
+
+	// Ensure it's NOT using the -t flag (which only tests config)
+	if containsString(content, "ExecStart=/usr/local/sbin/sshd-go -t") {
+		t.Error("sshd-go-keygen.service should use -G flag, not -t flag for key generation")
+	}
+}
 func containsString(s, substr string) bool {
 	return len(substr) == 0 || len(s) >= len(substr) &&
 		(s == substr || s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||

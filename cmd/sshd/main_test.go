@@ -491,6 +491,67 @@ func TestBuildVersionInfo(t *testing.T) {
 	}
 }
 
+// TestGenerateKeysFunctionality tests the host key generation functionality
+func TestGenerateKeysFunctionality(t *testing.T) {
+	// Create temporary directory for test keys
+	tempDir := t.TempDir()
+	
+	// Create test configuration with custom key paths
+	cfg := &config.Config{
+		HostKey: []string{
+			tempDir + "/test_rsa_key",
+			tempDir + "/test_ecdsa_key", 
+			tempDir + "/test_ed25519_key",
+		},
+	}
+
+	// Test key generation
+	err := generateHostKeys(cfg)
+	if err != nil {
+		t.Errorf("generateHostKeys failed: %v", err)
+	}
+
+	// Verify that key files were created
+	for _, keyPath := range cfg.HostKey {
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			t.Errorf("Host key file was not created: %s", keyPath)
+		}
+	}
+}
+
+// TestGenerateKeysWithDefaults tests key generation with default paths
+func TestGenerateKeysWithDefaults(t *testing.T) {
+	// Create test configuration with no host keys (should use defaults)
+	cfg := &config.Config{
+		HostKey: []string{}, // Empty to trigger defaults
+	}
+
+	// This test mainly checks that the function doesn't crash with default paths
+	// It won't actually create files in /etc/ssh/ due to permissions
+	// but it should not return an error about invalid configuration
+	err := generateHostKeys(cfg)
+	// We expect this to fail due to permissions, but not due to logic errors
+	if err != nil && !strings.Contains(err.Error(), "permission denied") &&
+		!strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("generateHostKeys failed with unexpected error: %v", err)
+	}
+}
+
+// TestGenerateKeysFlag tests the -G flag functionality
+func TestGenerateKeysFlag(t *testing.T) {
+	// Test that -G flag is recognized (will fail due to permissions but shouldn't be "unknown flag")
+	_, err := executeCommand("-G")
+	
+	// The command should recognize the flag but fail due to permissions
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "unknown flag") || strings.Contains(errStr, "unknown shorthand") {
+			t.Errorf("Generate keys flag not recognized: %v", err)
+		}
+		// Permission errors are expected when trying to write to /etc/ssh/
+	}
+}
+
 // BenchmarkCommandCreation benchmarks command creation performance
 func BenchmarkCommandCreation(b *testing.B) {
 	for i := 0; i < b.N; i++ {

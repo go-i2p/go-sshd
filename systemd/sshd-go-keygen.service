@@ -8,5 +8,5 @@ ConditionFileNotEmpty=|!/etc/ssh/ssh_host_ed25519_key
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/sshd-go -t
+ExecStart=/usr/local/sbin/sshd-go -G
 StandardOutput=journal
