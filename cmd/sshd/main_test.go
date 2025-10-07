@@ -495,12 +495,12 @@ func TestBuildVersionInfo(t *testing.T) {
 func TestGenerateKeysFunctionality(t *testing.T) {
 	// Create temporary directory for test keys
 	tempDir := t.TempDir()
-	
+
 	// Create test configuration with custom key paths
 	cfg := &config.Config{
 		HostKey: []string{
 			tempDir + "/test_rsa_key",
-			tempDir + "/test_ecdsa_key", 
+			tempDir + "/test_ecdsa_key",
 			tempDir + "/test_ed25519_key",
 		},
 	}
@@ -541,7 +541,7 @@ func TestGenerateKeysWithDefaults(t *testing.T) {
 func TestGenerateKeysFlag(t *testing.T) {
 	// Test that -G flag is recognized (will fail due to permissions but shouldn't be "unknown flag")
 	_, err := executeCommand("-G")
-	
+
 	// The command should recognize the flag but fail due to permissions
 	if err != nil {
 		errStr := err.Error()

@@ -31,12 +31,12 @@ func main() {
 // newRootCmd creates the root cobra command with OpenSSH-compatible flags
 func newRootCmd() *cobra.Command {
 	var (
-		configFile  string
-		port        int
-		daemon      bool
-		testConfig  bool
-		showVersion bool
-		inetdMode   bool
+		configFile   string
+		port         int
+		daemon       bool
+		testConfig   bool
+		showVersion  bool
+		inetdMode    bool
 		generateKeys bool
 	)
 
@@ -243,13 +243,13 @@ func generateHostKeys(cfg *config.Config) error {
 	if len(keyPaths) == 0 {
 		keyPaths = []string{
 			"/etc/ssh/ssh_host_rsa_key",
-			"/etc/ssh/ssh_host_ecdsa_key", 
+			"/etc/ssh/ssh_host_ecdsa_key",
 			"/etc/ssh/ssh_host_ed25519_key",
 		}
 	}
 
 	manager := crypto.NewHostKeyManager(keyPaths)
-	
+
 	// Generate all configured host keys
 	_, err := manager.LoadOrGenerateKeys()
 	if err != nil {
