@@ -38,6 +38,7 @@ type Config struct {
 	Subsystem          map[string]string `json:"subsystem"`
 	AllowTcpForwarding bool              `json:"allow_tcp_forwarding"`
 	X11Forwarding      bool              `json:"x11_forwarding"`
+	GatewayPorts       bool              `json:"gateway_ports"`
 }
 
 // Load reads and parses an OpenSSH sshd_config file.
@@ -57,6 +58,7 @@ func Load(filename string) (*Config, error) {
 		Subsystem:              make(map[string]string),
 		AllowTcpForwarding:     true,
 		X11Forwarding:          false,
+		GatewayPorts:           false,
 	}
 
 	// Open and parse configuration file
@@ -158,6 +160,24 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("subsystem requires exactly two arguments")
 		}
 		c.Subsystem[args[0]] = args[1]
+
+	case "allowtcpforwarding":
+		if len(args) != 1 {
+			return fmt.Errorf("allowtcpforwarding requires exactly one argument")
+		}
+		c.AllowTcpForwarding = parseBool(args[0])
+
+	case "x11forwarding":
+		if len(args) != 1 {
+			return fmt.Errorf("x11forwarding requires exactly one argument")
+		}
+		c.X11Forwarding = parseBool(args[0])
+
+	case "gatewayports":
+		if len(args) != 1 {
+			return fmt.Errorf("gatewayports requires exactly one argument")
+		}
+		c.GatewayPorts = parseBool(args[0])
 
 		// Add more directives as needed - keeping minimal for now
 	}

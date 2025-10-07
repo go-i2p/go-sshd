@@ -62,6 +62,35 @@ func New(cfg *config.Config) (*Server, error) {
 		"sftp": sftpHandler.CreateSubsystemHandler(),
 	}
 
+	// Configure port forwarding handlers if TCP forwarding is enabled
+	if cfg.AllowTcpForwarding {
+		forwardingHandler := handlers.NewForwardingHandler(cfg, logger)
+
+		// Set local port forwarding callback
+		sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()
+
+		// Set reverse port forwarding callback
+		sshServer.ReversePortForwardingCallback = forwardingHandler.CreateReversePortForwardHandler()
+
+		// Add direct-tcpip channel handler for local forwarding
+		if sshServer.ChannelHandlers == nil {
+			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+		}
+		sshServer.ChannelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
+
+		// Add request handlers for remote forwarding
+		if sshServer.RequestHandlers == nil {
+			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+		}
+		tcpHandler := forwardingHandler.GetTCPHandler()
+		sshServer.RequestHandlers["tcpip-forward"] = tcpHandler.HandleSSHRequest
+		sshServer.RequestHandlers["cancel-tcpip-forward"] = tcpHandler.HandleSSHRequest
+
+		logger.Info("Port forwarding enabled: local, remote, and direct TCP/IP forwarding")
+	} else {
+		logger.Info("Port forwarding disabled by configuration")
+	}
+
 	server := &Server{
 		config: cfg,
 		ssh:    sshServer,
