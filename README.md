@@ -22,7 +22,7 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 
 **🔄 Next Phase:** Signal handling for graceful shutdown and configuration reload
 
-**📊 Current Metrics:** ~1600 lines custom code, 8 dependencies, library-first architecture
+**📊 Current Metrics:** ~2200 lines custom code, 8 dependencies, library-first architecture
 
 ## Goal
 
