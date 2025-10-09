@@ -162,6 +162,30 @@ func (s *Server) initializeSSHServer() error {
 		s.logger.Info("SSH agent forwarding disabled by configuration")
 	}
 
+	// Configure X11 forwarding handlers if X11 forwarding is enabled
+	if s.config.X11Forwarding {
+		x11Handler := handlers.NewX11Handler(s.config, s.logger.GetLogrus())
+
+		// Add X11 forwarding channel handler
+		if sshServer.ChannelHandlers == nil {
+			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+		}
+		sshServer.ChannelHandlers["x11"] = x11Handler.CreateX11ChannelHandler()
+
+		// Add X11 forwarding request handler
+		if sshServer.RequestHandlers == nil {
+			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+		}
+		sshServer.RequestHandlers["x11-req"] = x11Handler.CreateX11RequestHandler()
+
+		s.logger.WithFields(map[string]interface{}{
+			"displayOffset": s.config.X11DisplayOffset,
+			"useLocalhost":  s.config.X11UseLocalhost,
+		}).Info("X11 forwarding enabled")
+	} else {
+		s.logger.Info("X11 forwarding disabled by configuration")
+	}
+
 	s.ssh = sshServer
 	return nil
 }

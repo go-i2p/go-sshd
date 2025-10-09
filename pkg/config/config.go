@@ -107,6 +107,8 @@ type Config struct {
 	AllowTcpForwarding   bool              `json:"allow_tcp_forwarding"`
 	AllowAgentForwarding bool              `json:"allow_agent_forwarding"`
 	X11Forwarding        bool              `json:"x11_forwarding"`
+	X11DisplayOffset     int               `json:"x11_display_offset"`
+	X11UseLocalhost      bool              `json:"x11_use_localhost"`
 	GatewayPorts         bool              `json:"gateway_ports"`
 
 	// Logging settings
@@ -469,6 +471,8 @@ func Load(filename string) (*Config, error) {
 		AllowTcpForwarding:     true,
 		AllowAgentForwarding:   true,
 		X11Forwarding:          false,
+		X11DisplayOffset:       10,  // OpenSSH default
+		X11UseLocalhost:        true, // OpenSSH default
 		GatewayPorts:           false,
 		LogLevel:               "INFO",
 		SyslogFacility:         "AUTH",
@@ -599,6 +603,22 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("x11forwarding requires exactly one argument")
 		}
 		c.X11Forwarding = parseBool(args[0])
+
+	case "x11displayoffset":
+		if len(args) != 1 {
+			return fmt.Errorf("x11displayoffset requires exactly one argument")
+		}
+		offset, err := strconv.Atoi(args[0])
+		if err != nil || offset < 0 {
+			return fmt.Errorf("invalid x11displayoffset value: %s", args[0])
+		}
+		c.X11DisplayOffset = offset
+
+	case "x11uselocalhost":
+		if len(args) != 1 {
+			return fmt.Errorf("x11uselocalhost requires exactly one argument")
+		}
+		c.X11UseLocalhost = parseBool(args[0])
 
 	case "gatewayports":
 		if len(args) != 1 {
