@@ -35,11 +35,11 @@ func TestNewAgentHandler(t *testing.T) {
 // TestIsAgentForwardingAllowed tests the agent forwarding permission logic.
 func TestIsAgentForwardingAllowed(t *testing.T) {
 	tests := []struct {
-		name         string
-		config       *config.Config
-		permissions  *ssh.Permissions
-		expectAllow  bool
-		description  string
+		name        string
+		config      *config.Config
+		permissions *ssh.Permissions
+		expectAllow bool
+		description string
 	}{
 		{
 			name: "allow when globally enabled",
@@ -285,20 +285,20 @@ type agentMockContext struct {
 	mu          sync.Mutex
 }
 
-func (m *agentMockContext) User() string                     { return m.user }
-func (m *agentMockContext) SessionID() string                { return "test-session" }
-func (m *agentMockContext) ClientVersion() string            { return "test-client" }
-func (m *agentMockContext) ServerVersion() string            { return "test-server" }
-func (m *agentMockContext) RemoteAddr() net.Addr             { return &agentMockAddr{addr: "127.0.0.1:12345"} }
-func (m *agentMockContext) LocalAddr() net.Addr              { return &agentMockAddr{addr: "127.0.0.1:22"} }
-func (m *agentMockContext) Permissions() *ssh.Permissions    { return m.permissions }
-func (m *agentMockContext) SetValue(key, value interface{})  {}
-func (m *agentMockContext) Value(key interface{}) interface{} { return nil }
+func (m *agentMockContext) User() string                            { return m.user }
+func (m *agentMockContext) SessionID() string                       { return "test-session" }
+func (m *agentMockContext) ClientVersion() string                   { return "test-client" }
+func (m *agentMockContext) ServerVersion() string                   { return "test-server" }
+func (m *agentMockContext) RemoteAddr() net.Addr                    { return &agentMockAddr{addr: "127.0.0.1:12345"} }
+func (m *agentMockContext) LocalAddr() net.Addr                     { return &agentMockAddr{addr: "127.0.0.1:22"} }
+func (m *agentMockContext) Permissions() *ssh.Permissions           { return m.permissions }
+func (m *agentMockContext) SetValue(key, value interface{})         {}
+func (m *agentMockContext) Value(key interface{}) interface{}       { return nil }
 func (m *agentMockContext) Deadline() (deadline time.Time, ok bool) { return time.Time{}, false }
-func (m *agentMockContext) Done() <-chan struct{}             { return nil }
-func (m *agentMockContext) Err() error                       { return nil }
-func (m *agentMockContext) Lock()                            { m.mu.Lock() }
-func (m *agentMockContext) Unlock()                          { m.mu.Unlock() }
+func (m *agentMockContext) Done() <-chan struct{}                   { return nil }
+func (m *agentMockContext) Err() error                              { return nil }
+func (m *agentMockContext) Lock()                                   { m.mu.Lock() }
+func (m *agentMockContext) Unlock()                                 { m.mu.Unlock() }
 
 // agentMockAddr implements net.Addr for testing.
 type agentMockAddr struct {
