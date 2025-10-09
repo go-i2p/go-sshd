@@ -103,11 +103,11 @@ type Config struct {
 	DenyUsers       []string `json:"deny_users"`
 
 	// Feature settings
-	Subsystem           map[string]string `json:"subsystem"`
-	AllowTcpForwarding  bool              `json:"allow_tcp_forwarding"`
+	Subsystem            map[string]string `json:"subsystem"`
+	AllowTcpForwarding   bool              `json:"allow_tcp_forwarding"`
 	AllowAgentForwarding bool              `json:"allow_agent_forwarding"`
-	X11Forwarding       bool              `json:"x11_forwarding"`
-	GatewayPorts        bool              `json:"gateway_ports"`
+	X11Forwarding        bool              `json:"x11_forwarding"`
+	GatewayPorts         bool              `json:"gateway_ports"`
 
 	// Logging settings
 	LogLevel       string `json:"log_level"`
@@ -465,11 +465,11 @@ func Load(filename string) (*Config, error) {
 		PubkeyAuthentication:   true,
 		AuthorizedKeysFile:     []string{".ssh/authorized_keys"},
 		PermitRootLogin:        "prohibit-password",
-		Subsystem:            make(map[string]string),
-		AllowTcpForwarding:   true,
-		AllowAgentForwarding: true,
-		X11Forwarding:        false,
-		GatewayPorts:         false,
+		Subsystem:              make(map[string]string),
+		AllowTcpForwarding:     true,
+		AllowAgentForwarding:   true,
+		X11Forwarding:          false,
+		GatewayPorts:           false,
 		LogLevel:               "INFO",
 		SyslogFacility:         "AUTH",
 		LogFile:                "", // Empty means stderr/stdout
