@@ -778,3 +778,70 @@ func TestHelperFunctions(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMetricsConfig(t *testing.T) {
+	// Test metrics configuration parsing
+	configContent := `# Metrics configuration
+MetricsEnabled yes
+MetricsAddress 0.0.0.0:9090
+`
+
+	// Create temporary test config file
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test_metrics_config")
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	// Load and parse config
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify metrics settings
+	if !cfg.MetricsEnabled {
+		t.Error("Expected MetricsEnabled to be true")
+	}
+
+	if cfg.MetricsAddress != "0.0.0.0:9090" {
+		t.Errorf("Expected MetricsAddress '0.0.0.0:9090', got %q", cfg.MetricsAddress)
+	}
+}
+
+func TestMetricsConfigDefaults(t *testing.T) {
+	// Test default metrics configuration
+	cfg, err := Load("/nonexistent/config")
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify defaults
+	if cfg.MetricsEnabled {
+		t.Error("Expected MetricsEnabled default to be false")
+	}
+
+	if cfg.MetricsAddress != "127.0.0.1:9100" {
+		t.Errorf("Expected default MetricsAddress '127.0.0.1:9100', got %q", cfg.MetricsAddress)
+	}
+}
+
+func TestInvalidMetricsAddress(t *testing.T) {
+	// Test invalid metrics address
+	configContent := `MetricsAddress invalid-address`
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test_invalid_metrics")
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	_, err := Load(configFile)
+	if err == nil {
+		t.Error("Expected error for invalid MetricsAddress format")
+	}
+
+	if !strings.Contains(err.Error(), "invalid metricsaddress format") {
+		t.Errorf("Expected error about invalid metricsaddress format, got: %v", err)
+	}
+}
