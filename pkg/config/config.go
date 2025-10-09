@@ -115,6 +115,10 @@ type Config struct {
 	LogLevel       string `json:"log_level"`
 	SyslogFacility string `json:"syslog_facility"`
 	LogFile        string `json:"log_file"`
+
+	// Monitoring and metrics settings (extension)
+	MetricsEnabled bool   `json:"metrics_enabled"` // Enable Prometheus metrics endpoint
+	MetricsAddress string `json:"metrics_address"` // Address for metrics HTTP server (e.g., "127.0.0.1:9100")
 }
 
 // Validate performs comprehensive validation of the configuration.
@@ -477,6 +481,8 @@ func Load(filename string) (*Config, error) {
 		LogLevel:               "INFO",
 		SyslogFacility:         "AUTH",
 		LogFile:                "", // Empty means stderr/stdout
+		MetricsEnabled:         false,
+		MetricsAddress:         "127.0.0.1:9100", // Default Prometheus port for node_exporter compatibility
 	}
 
 	// Open and parse configuration file
@@ -679,6 +685,22 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("logfile requires exactly one argument")
 		}
 		c.LogFile = args[0]
+
+	case "metricsenabled":
+		if len(args) != 1 {
+			return fmt.Errorf("metricsenabled requires exactly one argument")
+		}
+		c.MetricsEnabled = parseBool(args[0])
+
+	case "metricsaddress":
+		if len(args) != 1 {
+			return fmt.Errorf("metricsaddress requires exactly one argument")
+		}
+		// Validate address format (host:port)
+		if _, _, err := net.SplitHostPort(args[0]); err != nil {
+			return fmt.Errorf("invalid metricsaddress format: %s (expected host:port)", args[0])
+		}
+		c.MetricsAddress = args[0]
 
 		// Add more directives as needed - keeping minimal for now
 	}
