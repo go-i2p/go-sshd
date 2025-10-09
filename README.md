@@ -15,6 +15,8 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Interactive shell sessions with PTY support
 - SFTP subsystem for file transfer (scp/sftp client support)
 - Complete port forwarding support (local, remote, direct TCP/IP)
+- SSH agent forwarding (auth-agent@openssh.com)
+- X11 display forwarding for GUI applications
 - Comprehensive host key management (auto-generation, multiple key types)
 - User authorization system (AllowUsers/DenyUsers, PermitRootLogin, authorized_keys options)
 - Enhanced logging system with OpenSSH-compatible configuration (LogLevel, SyslogFacility, LogFile)
@@ -35,7 +37,7 @@ Create a 100% compatible OpenSSH SSHD server by integrating mature Go libraries 
 
 - Parse identical `sshd_config` files
 - Accept same command-line arguments as OpenSSH SSHD  
-- Support all OpenSSH client features (ssh, scp, sftp, port forwarding)
+- Support all OpenSSH client features (ssh, scp, sftp, port forwarding, agent forwarding, X11 forwarding)
 - Drop-in systemd service replacement
 
 ## Requirements

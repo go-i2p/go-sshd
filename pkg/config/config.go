@@ -471,7 +471,7 @@ func Load(filename string) (*Config, error) {
 		AllowTcpForwarding:     true,
 		AllowAgentForwarding:   true,
 		X11Forwarding:          false,
-		X11DisplayOffset:       10,  // OpenSSH default
+		X11DisplayOffset:       10,   // OpenSSH default
 		X11UseLocalhost:        true, // OpenSSH default
 		GatewayPorts:           false,
 		LogLevel:               "INFO",

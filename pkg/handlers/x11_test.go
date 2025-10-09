@@ -472,13 +472,13 @@ type x11MockContext struct {
 	mu          sync.Mutex
 }
 
-func (m *x11MockContext) User() string                            { return m.user }
-func (m *x11MockContext) SessionID() string                       { return "test-session-x11" }
-func (m *x11MockContext) ClientVersion() string                   { return "test-client" }
-func (m *x11MockContext) ServerVersion() string                   { return "test-server" }
-func (m *x11MockContext) RemoteAddr() net.Addr                    { return &x11MockAddr{addr: "127.0.0.1:12345"} }
-func (m *x11MockContext) LocalAddr() net.Addr                     { return &x11MockAddr{addr: "127.0.0.1:22"} }
-func (m *x11MockContext) Permissions() *ssh.Permissions           { return m.permissions }
+func (m *x11MockContext) User() string                  { return m.user }
+func (m *x11MockContext) SessionID() string             { return "test-session-x11" }
+func (m *x11MockContext) ClientVersion() string         { return "test-client" }
+func (m *x11MockContext) ServerVersion() string         { return "test-server" }
+func (m *x11MockContext) RemoteAddr() net.Addr          { return &x11MockAddr{addr: "127.0.0.1:12345"} }
+func (m *x11MockContext) LocalAddr() net.Addr           { return &x11MockAddr{addr: "127.0.0.1:22"} }
+func (m *x11MockContext) Permissions() *ssh.Permissions { return m.permissions }
 func (m *x11MockContext) SetValue(key, value interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
