@@ -25,13 +25,15 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - **Production-ready installation script**
 - **Performance monitoring with Prometheus metrics and health checks**
 - **Comprehensive performance benchmarking suite**
-- Complete test suite with >85% coverage
+- **Keyboard-interactive authentication** (PAM-based challenge-response for MFA)
+- **Certificate-based authentication** (SSH certificates with CA trust and revocation)
+- Complete test suite with >80% average coverage (>85% in security-critical components)
 
-**🔄 Next Phase:** Production testing, baseline performance validation, and advanced authentication
+**🔄 Next Phase:** Production testing and baseline performance validation
 
-**📊 Current Metrics:** ~2800 lines custom code, 9 dependencies, library-first architecture
+**📊 Current Metrics:** ~4,600 lines custom code, 9 dependencies, library-first architecture
 
-**🆕 Latest:** Performance benchmarking suite for OpenSSH comparison validation
+**🆕 Latest:** Full advanced authentication support (keyboard-interactive, certificate-based)
 
 ## Goal
 
@@ -116,10 +118,10 @@ Comprehensive performance benchmarking suite to validate the <20% performance ta
 
 ```bash
 # Automated setup (requires root)
-sudo ./test/benchmark-setup.sh setup
+cd test && sudo ./benchmark-setup.sh setup
 
 # Run benchmarks
-cd test && go test -bench=. -benchtime=3s
+go test -bench=. -benchtime=3s
 
 # Detailed analysis with memory profiling
 go test -bench=. -benchtime=10s -benchmem
