@@ -96,10 +96,11 @@ func (s *Server) initializeSSHServer() error {
 	}
 
 	// Configure authentication handlers using the new AuthHandler
-	if s.config.PasswordAuthentication || s.config.PubkeyAuthentication {
+	if s.config.PasswordAuthentication || s.config.PubkeyAuthentication || s.config.KbdInteractiveAuthentication {
 		authHandler := handlers.NewAuthHandler(s.config, s.logger.GetLogrus())
 		sshServer.PasswordHandler = authHandler.CreatePasswordHandler()
 		sshServer.PublicKeyHandler = authHandler.CreatePublicKeyHandler()
+		sshServer.KeyboardInteractiveHandler = authHandler.CreateKeyboardInteractiveHandler()
 	}
 
 	// Configure session handler using the new ShellHandler

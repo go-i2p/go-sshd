@@ -23,11 +23,15 @@ A drop-in replacement for OpenSSH SSHD written in Go.
 - Signal handling for graceful shutdown (SIGTERM/SIGINT) and configuration reload (SIGHUP)
 - **Systemd integration with socket activation support**
 - **Production-ready installation script**
+- **Performance monitoring with Prometheus metrics and health checks**
+- **Comprehensive performance benchmarking suite**
 - Complete test suite with >85% coverage
 
-**🔄 Next Phase:** Production testing and performance optimization
+**🔄 Next Phase:** Production testing, baseline performance validation, and advanced authentication
 
-**📊 Current Metrics:** ~2500 lines custom code, 8 dependencies, library-first architecture
+**📊 Current Metrics:** ~2800 lines custom code, 9 dependencies, library-first architecture
+
+**🆕 Latest:** Performance benchmarking suite for OpenSSH comparison validation
 
 ## Goal
 
@@ -106,6 +110,23 @@ This project prioritizes library integration over custom implementation:
 - **crypto/ssh** - SSH protocol and cryptography
 - System libraries for authentication
 
+## Performance Benchmarking
+
+Comprehensive performance benchmarking suite to validate the <20% performance target:
+
+```bash
+# Automated setup (requires root)
+sudo ./test/benchmark-setup.sh setup
+
+# Run benchmarks
+cd test && go test -bench=. -benchtime=3s
+
+# Detailed analysis with memory profiling
+go test -bench=. -benchtime=10s -benchmem
+```
+
+See [test/README.md](test/README.md) for detailed benchmark documentation, OpenSSH comparison methodology, and CI/CD integration examples.
+
 ## Contributing
 
 Implementation follows library-first principles. See [development docs](docs/) for detailed information.
@@ -113,6 +134,7 @@ Implementation follows library-first principles. See [development docs](docs/) f
 ### Key Documentation
 
 - [Systemd Deployment Guide](docs/systemd-deployment.md) - Production deployment with systemd
+- [Performance Monitoring Guide](docs/monitoring.md) - Prometheus metrics and health checks
 - [Development Plan](PLAN.md) - Project roadmap and implementation status
 - [Project Goals](GOAL.md) - Technical specifications and architecture
 

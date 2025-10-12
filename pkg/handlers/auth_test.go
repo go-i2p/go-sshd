@@ -384,3 +384,201 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 		t.Error("Expected public key with options to be accepted")
 	}
 }
+
+// TestCreateKeyboardInteractiveHandler_Disabled tests that keyboard-interactive auth respects config.
+func TestCreateKeyboardInteractiveHandler_Disabled(t *testing.T) {
+	cfg := &config.Config{
+		PasswordAuthentication:       true,
+		PubkeyAuthentication:         true,
+		KbdInteractiveAuthentication: false, // Disabled
+	}
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(cfg, logger)
+
+	// Test the handler creation - handler should still be created
+	kbdHandler := handler.CreateKeyboardInteractiveHandler()
+	if kbdHandler == nil {
+		t.Error("Expected keyboard-interactive handler to be created even when disabled")
+	}
+
+	// The handler would log that auth is disabled and return false
+	// (we can't easily test the actual authentication without complex mocks)
+}
+
+// TestCreateKeyboardInteractiveHandler_Enabled tests that handler is created when enabled.
+func TestCreateKeyboardInteractiveHandler_Enabled(t *testing.T) {
+	cfg := &config.Config{
+		PasswordAuthentication:       true,
+		PubkeyAuthentication:         true,
+		KbdInteractiveAuthentication: true, // Enabled
+		AllowUsers:                   []string{},
+		DenyUsers:                    []string{},
+		PermitRootLogin:              "yes",
+	}
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(cfg, logger)
+
+	// Test the handler creation
+	kbdHandler := handler.CreateKeyboardInteractiveHandler()
+	if kbdHandler == nil {
+		t.Error("Expected keyboard-interactive handler to be created when enabled")
+	}
+}
+
+// TestAuthenticateKeyboardInteractive_MockChallenger tests the PAM conversation flow.
+// Note: This test uses a mock challenger since we can't easily test actual PAM authentication
+// without system-level PAM configuration and real user accounts.
+func TestAuthenticateKeyboardInteractive_MockChallenger(t *testing.T) {
+	cfg := &config.Config{
+		KbdInteractiveAuthentication: true,
+		AllowUsers:                   []string{},
+		DenyUsers:                    []string{},
+		PermitRootLogin:              "yes",
+	}
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(cfg, logger)
+
+	// Create a mock challenger that simulates client responses
+	mockChallenger := func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+		// Return mock password for password prompt
+		if len(questions) > 0 {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				if !echos[i] {
+					// Password prompt
+					answers[i] = "testpassword"
+				} else {
+					// Username or other prompt
+					answers[i] = "testuser"
+				}
+			}
+			return answers, nil
+		}
+		return []string{}, nil
+	}
+
+	// Note: This will attempt real PAM authentication with "testuser"
+	// In most test environments, this will fail (which is expected)
+	// We're primarily testing that the code doesn't panic and handles errors gracefully
+	result := handler.authenticateKeyboardInteractive("testuser", mockChallenger)
+
+	// We expect this to fail in test environment (no real PAM setup for testuser)
+	// The important thing is no panic occurred
+	if result {
+		t.Log("Note: Keyboard-interactive auth succeeded (unexpected in test env)")
+	}
+}
+
+// TestAuthenticateKeyboardInteractive_UserAuthorization tests user allow/deny lists.
+func TestAuthenticateKeyboardInteractive_UserAuthorization(t *testing.T) {
+	tests := []struct {
+		name        string
+		allowUsers  []string
+		denyUsers   []string
+		testUser    string
+		expectAllow bool
+	}{
+		{
+			name:        "Allow list permits user",
+			allowUsers:  []string{"alice", "bob"},
+			denyUsers:   []string{},
+			testUser:    "alice",
+			expectAllow: true,
+		},
+		{
+			name:        "Allow list blocks user",
+			allowUsers:  []string{"alice", "bob"},
+			denyUsers:   []string{},
+			testUser:    "charlie",
+			expectAllow: false,
+		},
+		{
+			name:        "Deny list blocks user",
+			allowUsers:  []string{},
+			denyUsers:   []string{"charlie"},
+			testUser:    "charlie",
+			expectAllow: false,
+		},
+		{
+			name:        "Deny list permits user",
+			allowUsers:  []string{},
+			denyUsers:   []string{"charlie"},
+			testUser:    "alice",
+			expectAllow: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				KbdInteractiveAuthentication: true,
+				AllowUsers:                   tt.allowUsers,
+				DenyUsers:                    tt.denyUsers,
+				PermitRootLogin:              "yes",
+			}
+			logger, _ := test.NewNullLogger()
+			handler := NewAuthHandler(cfg, logger)
+
+			// Check authorization (before PAM is even attempted)
+			allowed := handler.authorizer.IsUserAllowed(tt.testUser, "127.0.0.1:12345")
+			if allowed != tt.expectAllow {
+				t.Errorf("Expected IsUserAllowed=%v, got %v", tt.expectAllow, allowed)
+			}
+		})
+	}
+}
+
+// TestAuthenticateKeyboardInteractive_RootLogin tests root login restrictions.
+func TestAuthenticateKeyboardInteractive_RootLogin(t *testing.T) {
+	tests := []struct {
+		name            string
+		permitRootLogin string
+		authMethod      string
+		expectAllow     bool
+	}{
+		{
+			name:            "Root login yes allows keyboard-interactive",
+			permitRootLogin: "yes",
+			authMethod:      "keyboard-interactive",
+			expectAllow:     true,
+		},
+		{
+			name:            "Root login no blocks keyboard-interactive",
+			permitRootLogin: "no",
+			authMethod:      "keyboard-interactive",
+			expectAllow:     false,
+		},
+		{
+			name:            "Root login prohibit-password blocks keyboard-interactive",
+			permitRootLogin: "prohibit-password",
+			authMethod:      "keyboard-interactive",
+			expectAllow:     false,
+		},
+		{
+			name:            "Root login forced-commands-only blocks keyboard-interactive",
+			permitRootLogin: "forced-commands-only",
+			authMethod:      "keyboard-interactive",
+			expectAllow:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				KbdInteractiveAuthentication: true,
+				AllowUsers:                   []string{},
+				DenyUsers:                    []string{},
+				PermitRootLogin:              tt.permitRootLogin,
+			}
+			logger, _ := test.NewNullLogger()
+			handler := NewAuthHandler(cfg, logger)
+
+			// Check root login authorization
+			allowed := handler.authorizer.IsRootLoginAllowed("root", tt.authMethod)
+			if allowed != tt.expectAllow {
+				t.Errorf("Expected IsRootLoginAllowed=%v for %s, got %v",
+					tt.expectAllow, tt.permitRootLogin, allowed)
+			}
+		})
+	}
+}

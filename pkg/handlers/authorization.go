@@ -102,23 +102,24 @@ func (ua *UserAuthorizer) IsRootLoginAllowed(username, authMethod string) bool {
 		return false
 	case "prohibit-password":
 		// Allow only public key authentication for root
-		if authMethod == "password" {
-			ua.logger.Infof("Root password login denied by PermitRootLogin=prohibit-password")
+		// Block password and keyboard-interactive (which can do password prompts)
+		if authMethod == "password" || authMethod == "keyboard-interactive" {
+			ua.logger.Infof("Root %s login denied by PermitRootLogin=prohibit-password", authMethod)
 			return false
 		}
 		return true
 	case "forced-commands-only":
 		// Would need to check if key has command= option
 		// For now, treat same as prohibit-password
-		if authMethod == "password" {
-			ua.logger.Infof("Root password login denied by PermitRootLogin=forced-commands-only")
+		if authMethod == "password" || authMethod == "keyboard-interactive" {
+			ua.logger.Infof("Root %s login denied by PermitRootLogin=forced-commands-only", authMethod)
 			return false
 		}
 		return true
 	default:
 		// Unknown value, default to prohibit-password for security
 		ua.logger.Warnf("Unknown PermitRootLogin value: %s, defaulting to prohibit-password", ua.config.PermitRootLogin)
-		if authMethod == "password" {
+		if authMethod == "password" || authMethod == "keyboard-interactive" {
 			return false
 		}
 		return true

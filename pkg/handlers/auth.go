@@ -22,18 +22,27 @@ import (
 // AuthHandler handles SSH authentication using system libraries.
 // This is a thin wrapper around msteinert/pam and crypto/ssh for OpenSSH compatibility.
 type AuthHandler struct {
-	config     *config.Config
-	logger     *logrus.Logger
-	authorizer *UserAuthorizer
+	config        *config.Config
+	logger        *logrus.Logger
+	authorizer    *UserAuthorizer
+	certValidator *CertificateValidator
 }
 
 // NewAuthHandler creates a new authentication handler with the given configuration.
 // Uses library-first approach - delegates all auth logic to mature libraries.
 func NewAuthHandler(cfg *config.Config, logger *logrus.Logger) *AuthHandler {
+	// Initialize certificate validator (may be nil if no CAs configured)
+	certValidator, err := NewCertificateValidator(cfg, logger)
+	if err != nil {
+		logger.Warnf("Certificate validator initialization failed: %v", err)
+		certValidator = nil // Continue without certificate support
+	}
+
 	return &AuthHandler{
-		config:     cfg,
-		logger:     logger,
-		authorizer: NewUserAuthorizer(cfg, logger),
+		config:        cfg,
+		logger:        logger,
+		authorizer:    NewUserAuthorizer(cfg, logger),
+		certValidator: certValidator,
 	}
 }
 
@@ -78,6 +87,7 @@ func (a *AuthHandler) CreatePasswordHandler() ssh.PasswordHandler {
 
 // CreatePublicKeyHandler creates an SSH public key authentication handler.
 // Uses golang.org/x/crypto/ssh for authorized_keys parsing and validation.
+// Also supports SSH certificate authentication when TrustedUserCAKeys is configured.
 func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 	return func(ctx ssh.Context, key ssh.PublicKey) bool {
 		user := ctx.User()
@@ -102,13 +112,68 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 			return false
 		}
 
-		// Use crypto/ssh for authorized keys validation
+		// Check if this is a certificate - certificates implement PublicKey interface
+		if cert, ok := key.(*gossh.Certificate); ok {
+			// Try certificate authentication first
+			if a.certValidator != nil && a.certValidator.IsCertificateAuthenticationEnabled() {
+				a.logger.Debugf("Certificate detected for user %s, attempting certificate validation", user)
+				if err := a.certValidator.ValidateCertificate(user, cert); err == nil {
+					a.logger.Infof("Certificate authentication successful for user %s", user)
+					return true
+				}
+				a.logger.Debugf("Certificate validation failed for user %s, falling back to authorized_keys", user)
+			} else {
+				a.logger.Debugf("Certificate authentication not configured, treating as regular public key")
+			}
+		}
+
+		// Use crypto/ssh for authorized keys validation (standard public keys and fallback for certs)
 		success := a.validatePublicKey(user, key, ctx.RemoteAddr().String())
 
 		if success {
 			a.logger.Infof("Public key authentication successful for user %s", user)
 		} else {
 			a.logger.Warnf("Public key authentication failed for user %s", user)
+		}
+
+		return success
+	}
+}
+
+// CreateKeyboardInteractiveHandler creates an SSH keyboard-interactive authentication handler.
+// Uses msteinert/pam for challenge-response authentication with OpenSSH compatibility.
+// This method allows for multi-factor authentication, one-time passwords, and custom prompts.
+func (a *AuthHandler) CreateKeyboardInteractiveHandler() ssh.KeyboardInteractiveHandler {
+	return func(ctx ssh.Context, challenger gossh.KeyboardInteractiveChallenge) bool {
+		user := ctx.User()
+
+		// Check if keyboard-interactive authentication is enabled
+		if !a.config.KbdInteractiveAuthentication {
+			a.logger.Debugf("Keyboard-interactive authentication disabled, rejecting user %s", user)
+			return false
+		}
+
+		a.logger.Infof("Keyboard-interactive authentication attempt for user %s from %s", user, ctx.RemoteAddr())
+
+		// Check user authorization first (before expensive auth operations)
+		if !a.authorizer.IsUserAllowed(user, ctx.RemoteAddr().String()) {
+			a.logger.Warnf("User %s not authorized for access", user)
+			return false
+		}
+
+		// Check root login permissions
+		if !a.authorizer.IsRootLoginAllowed(user, "keyboard-interactive") {
+			a.logger.Warnf("Root keyboard-interactive login denied for user %s", user)
+			return false
+		}
+
+		// Use PAM for keyboard-interactive authentication
+		success := a.authenticateKeyboardInteractive(user, challenger)
+
+		if success {
+			a.logger.Infof("Keyboard-interactive authentication successful for user %s", user)
+		} else {
+			a.logger.Warnf("Keyboard-interactive authentication failed for user %s", user)
 		}
 
 		return success
@@ -325,4 +390,76 @@ func (a *AuthHandler) validateSourceAddress(remoteAddr string, allowedPatterns [
 	}
 
 	return false
+}
+
+// authenticateKeyboardInteractive performs keyboard-interactive authentication using PAM.
+// This is a thin wrapper that connects PAM's conversation interface with SSH's challenger.
+// Library-first approach: all authentication logic delegated to msteinert/pam library.
+func (a *AuthHandler) authenticateKeyboardInteractive(username string, challenger gossh.KeyboardInteractiveChallenge) bool {
+	// Use PAM service name "sshd" for compatibility with OpenSSH
+	tx, err := pam.StartFunc("sshd", username, func(s pam.Style, msg string) (string, error) {
+		switch s {
+		case pam.PromptEchoOff:
+			// Password prompt - request with echo disabled
+			answers, err := challenger("", "", []string{msg}, []bool{false})
+			if err != nil {
+				a.logger.Debugf("Challenger failed for user %s: %v", username, err)
+				return "", err
+			}
+			if len(answers) == 0 {
+				return "", fmt.Errorf("no answer provided")
+			}
+			return answers[0], nil
+
+		case pam.PromptEchoOn:
+			// Username or visible prompt - request with echo enabled
+			answers, err := challenger("", "", []string{msg}, []bool{true})
+			if err != nil {
+				a.logger.Debugf("Challenger failed for user %s: %v", username, err)
+				return "", err
+			}
+			if len(answers) == 0 {
+				return "", fmt.Errorf("no answer provided")
+			}
+			return answers[0], nil
+
+		case pam.ErrorMsg:
+			// Error message - send to client as instruction
+			_, err := challenger("", msg, []string{}, []bool{})
+			if err != nil {
+				a.logger.Debugf("Failed to send error message to client for user %s: %v", username, err)
+			}
+			return "", nil
+
+		case pam.TextInfo:
+			// Informational message - send to client as instruction
+			_, err := challenger("", msg, []string{}, []bool{})
+			if err != nil {
+				a.logger.Debugf("Failed to send info message to client for user %s: %v", username, err)
+			}
+			return "", nil
+
+		default:
+			return "", fmt.Errorf("unsupported PAM conversation style: %v", s)
+		}
+	})
+
+	if err != nil {
+		a.logger.Errorf("Failed to start PAM transaction for user %s: %v", username, err)
+		return false
+	}
+
+	// Perform PAM authentication
+	if err := tx.Authenticate(0); err != nil {
+		a.logger.Debugf("PAM keyboard-interactive authentication failed for user %s: %v", username, err)
+		return false
+	}
+
+	// Check account validity
+	if err := tx.AcctMgmt(0); err != nil {
+		a.logger.Debugf("PAM account check failed for user %s: %v", username, err)
+		return false
+	}
+
+	return true
 }

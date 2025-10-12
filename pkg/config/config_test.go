@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -46,6 +47,138 @@ func TestLoadDefaults(t *testing.T) {
 
 	if cfg.PermitRootLogin != "prohibit-password" {
 		t.Errorf("Expected default PermitRootLogin 'prohibit-password', got %q", cfg.PermitRootLogin)
+	}
+
+	if !cfg.KbdInteractiveAuthentication {
+		t.Error("Expected KbdInteractiveAuthentication default to be true")
+	}
+}
+
+func TestKbdInteractiveAuthenticationConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		expectKbd bool
+	}{
+		{
+			name:      "KbdInteractiveAuthentication yes",
+			content:   "KbdInteractiveAuthentication yes\n",
+			expectKbd: true,
+		},
+		{
+			name:      "KbdInteractiveAuthentication no",
+			content:   "KbdInteractiveAuthentication no\n",
+			expectKbd: false,
+		},
+		{
+			name:      "KbdInteractiveAuthentication true",
+			content:   "KbdInteractiveAuthentication true\n",
+			expectKbd: true,
+		},
+		{
+			name:      "KbdInteractiveAuthentication false",
+			content:   "KbdInteractiveAuthentication false\n",
+			expectKbd: false,
+		},
+		{
+			name:      "KbdInteractiveAuthentication 1",
+			content:   "KbdInteractiveAuthentication 1\n",
+			expectKbd: true,
+		},
+		{
+			name:      "KbdInteractiveAuthentication 0",
+			content:   "KbdInteractiveAuthentication 0\n",
+			expectKbd: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configFile := filepath.Join(tmpDir, "test_sshd_config")
+
+			err := os.WriteFile(configFile, []byte(tt.content), 0o644)
+			if err != nil {
+				t.Fatalf("Failed to create test config file: %v", err)
+			}
+
+			cfg, err := Load(configFile)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+
+			if cfg.KbdInteractiveAuthentication != tt.expectKbd {
+				t.Errorf("Expected KbdInteractiveAuthentication=%v, got %v",
+					tt.expectKbd, cfg.KbdInteractiveAuthentication)
+			}
+		})
+	}
+}
+
+func TestCertificateAuthenticationConfig(t *testing.T) {
+	tests := []struct {
+		name            string
+		content         string
+		expectCAKeys    []string
+		expectRevoked   []string
+	}{
+		{
+			name:         "Single TrustedUserCAKeys",
+			content:      "TrustedUserCAKeys /etc/ssh/ca.pub\n",
+			expectCAKeys: []string{"/etc/ssh/ca.pub"},
+			expectRevoked: []string{},
+		},
+		{
+			name:         "Multiple TrustedUserCAKeys",
+			content:      "TrustedUserCAKeys /etc/ssh/ca1.pub\nTrustedUserCAKeys /etc/ssh/ca2.pub\n",
+			expectCAKeys: []string{"/etc/ssh/ca1.pub", "/etc/ssh/ca2.pub"},
+			expectRevoked: []string{},
+		},
+		{
+			name:         "Single RevokedKeys",
+			content:      "RevokedKeys /etc/ssh/revoked_keys\n",
+			expectCAKeys: []string{},
+			expectRevoked: []string{"/etc/ssh/revoked_keys"},
+		},
+		{
+			name:         "Multiple RevokedKeys",
+			content:      "RevokedKeys /etc/ssh/revoked1\nRevokedKeys /etc/ssh/revoked2\n",
+			expectCAKeys: []string{},
+			expectRevoked: []string{"/etc/ssh/revoked1", "/etc/ssh/revoked2"},
+		},
+		{
+			name:         "Both TrustedUserCAKeys and RevokedKeys",
+			content:      "TrustedUserCAKeys /etc/ssh/ca.pub\nRevokedKeys /etc/ssh/revoked_keys\n",
+			expectCAKeys: []string{"/etc/ssh/ca.pub"},
+			expectRevoked: []string{"/etc/ssh/revoked_keys"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configFile := filepath.Join(tmpDir, "test_sshd_config")
+
+			err := os.WriteFile(configFile, []byte(tt.content), 0o644)
+			if err != nil {
+				t.Fatalf("Failed to create test config file: %v", err)
+			}
+
+			cfg, err := Load(configFile)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+
+			if !reflect.DeepEqual(cfg.TrustedUserCAKeys, tt.expectCAKeys) {
+				t.Errorf("Expected TrustedUserCAKeys=%v, got %v",
+					tt.expectCAKeys, cfg.TrustedUserCAKeys)
+			}
+
+			if !reflect.DeepEqual(cfg.RevokedKeys, tt.expectRevoked) {
+				t.Errorf("Expected RevokedKeys=%v, got %v",
+					tt.expectRevoked, cfg.RevokedKeys)
+			}
+		})
 	}
 }
 

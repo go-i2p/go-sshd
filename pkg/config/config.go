@@ -93,9 +93,14 @@ type Config struct {
 	HostKey []string `json:"host_key"`
 
 	// Authentication settings
-	PasswordAuthentication bool     `json:"password_authentication"`
-	PubkeyAuthentication   bool     `json:"pubkey_authentication"`
-	AuthorizedKeysFile     []string `json:"authorized_keys_file"`
+	PasswordAuthentication       bool     `json:"password_authentication"`
+	PubkeyAuthentication         bool     `json:"pubkey_authentication"`
+	KbdInteractiveAuthentication bool     `json:"kbd_interactive_authentication"`
+	AuthorizedKeysFile           []string `json:"authorized_keys_file"`
+
+	// Certificate authentication settings
+	TrustedUserCAKeys []string `json:"trusted_user_ca_keys"` // CA public keys for user certificate validation
+	RevokedKeys       []string `json:"revoked_keys"`         // Files containing revoked certificates/keys
 
 	// Session settings
 	PermitRootLogin string   `json:"permit_root_login"`
@@ -463,26 +468,29 @@ func detectKeyType(keyPath string) string {
 func Load(filename string) (*Config, error) {
 	// Set defaults matching OpenSSH behavior
 	cfg := &Config{
-		Port:                   22,
-		ListenAddress:          []string{"0.0.0.0"},
-		Protocol:               []int{2},
-		HostKey:                []string{"/etc/ssh/ssh_host_rsa_key", "/etc/ssh/ssh_host_ecdsa_key", "/etc/ssh/ssh_host_ed25519_key"},
-		PasswordAuthentication: true,
-		PubkeyAuthentication:   true,
-		AuthorizedKeysFile:     []string{".ssh/authorized_keys"},
-		PermitRootLogin:        "prohibit-password",
-		Subsystem:              make(map[string]string),
-		AllowTcpForwarding:     true,
-		AllowAgentForwarding:   true,
-		X11Forwarding:          false,
-		X11DisplayOffset:       10,   // OpenSSH default
-		X11UseLocalhost:        true, // OpenSSH default
-		GatewayPorts:           false,
-		LogLevel:               "INFO",
-		SyslogFacility:         "AUTH",
-		LogFile:                "", // Empty means stderr/stdout
-		MetricsEnabled:         false,
-		MetricsAddress:         "127.0.0.1:9100", // Default Prometheus port for node_exporter compatibility
+		Port:                         22,
+		ListenAddress:                []string{"0.0.0.0"},
+		Protocol:                     []int{2},
+		HostKey:                      []string{"/etc/ssh/ssh_host_rsa_key", "/etc/ssh/ssh_host_ecdsa_key", "/etc/ssh/ssh_host_ed25519_key"},
+		PasswordAuthentication:       true,
+		PubkeyAuthentication:         true,
+		KbdInteractiveAuthentication: true, // OpenSSH default: yes
+		AuthorizedKeysFile:           []string{".ssh/authorized_keys"},
+		TrustedUserCAKeys:            []string{},       // OpenSSH default: none
+		RevokedKeys:                  []string{},       // OpenSSH default: none
+		PermitRootLogin:              "prohibit-password",
+		Subsystem:                    make(map[string]string),
+		AllowTcpForwarding:           true,
+		AllowAgentForwarding:         true,
+		X11Forwarding:                false,
+		X11DisplayOffset:             10,   // OpenSSH default
+		X11UseLocalhost:              true, // OpenSSH default
+		GatewayPorts:                 false,
+		LogLevel:                     "INFO",
+		SyslogFacility:               "AUTH",
+		LogFile:                      "", // Empty means stderr/stdout
+		MetricsEnabled:               false,
+		MetricsAddress:               "127.0.0.1:9100", // Default Prometheus port for node_exporter compatibility
 	}
 
 	// Open and parse configuration file
@@ -586,6 +594,12 @@ func (c *Config) parseDirective(directive string, args []string) error {
 		}
 		c.PubkeyAuthentication = parseBool(args[0])
 
+	case "kbdinteractiveauthentication":
+		if len(args) != 1 {
+			return fmt.Errorf("kbdinteractiveauthentication requires exactly one argument")
+		}
+		c.KbdInteractiveAuthentication = parseBool(args[0])
+
 	case "subsystem":
 		if len(args) != 2 {
 			return fmt.Errorf("subsystem requires exactly two arguments")
@@ -659,6 +673,18 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("authorizedkeysfile requires at least one argument")
 		}
 		c.AuthorizedKeysFile = args
+
+	case "trustedusercakeys":
+		if len(args) != 1 {
+			return fmt.Errorf("trustedusercakeys requires exactly one argument")
+		}
+		c.TrustedUserCAKeys = append(c.TrustedUserCAKeys, args[0])
+
+	case "revokedkeys":
+		if len(args) != 1 {
+			return fmt.Errorf("revokedkeys requires exactly one argument")
+		}
+		c.RevokedKeys = append(c.RevokedKeys, args[0])
 
 	case "loglevel":
 		if len(args) != 1 {
