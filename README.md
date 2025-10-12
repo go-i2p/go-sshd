@@ -127,6 +127,40 @@ go test -bench=. -benchtime=10s -benchmem
 
 See [test/README.md](test/README.md) for detailed benchmark documentation, OpenSSH comparison methodology, and CI/CD integration examples.
 
+## Security
+
+### Vulnerability Scanning
+
+Run automated security scans to check for vulnerabilities in dependencies:
+
+```bash
+# Install security scanning tools
+./security-audit.sh --install
+
+# Quick vulnerability scan
+./security-audit.sh --quick
+
+# Comprehensive security audit
+./security-audit.sh --full
+```
+
+### Security Features
+
+- **Zero Custom Cryptography**: All cryptographic operations use `golang.org/x/crypto`
+- **Zero Custom Protocol**: All SSH protocol handling uses `gliderlabs/ssh`
+- **Regular Updates**: Dependencies monitored for security vulnerabilities
+- **Automated Scanning**: CI/CD pipeline includes vulnerability scanning
+
+### Security Documentation
+
+- [SECURITY.md](SECURITY.md) - Security policy and vulnerability disclosure process
+- [SECURITY_AUDIT.md](SECURITY_AUDIT.md) - Comprehensive dependency security audit
+- [.github/workflows/security-scan.yml](.github/workflows/security-scan.yml) - Automated security scanning
+
+### Reporting Security Issues
+
+Please report security vulnerabilities via [GitHub Security Advisory](https://github.com/yourusername/sshd-go/security/advisories/new) or see [SECURITY.md](SECURITY.md) for details.
+
 ## Contributing
 
 Implementation follows library-first principles. See [development docs](docs/) for detailed information.

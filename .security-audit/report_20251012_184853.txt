@@ -1,0 +1,21 @@
+Security Audit Report
+Generated: Sun 12 Oct 2025 06:49:19 PM EDT
+Project: go-sshd
+Status: FAIL
+
+Scan Results:
+-------------
+/home/idk/go/src/github.com/go-i2p/go-sshd/.security-audit/govulncheck_20251012_184853.txt
+/home/idk/go/src/github.com/go-i2p/go-sshd/.security-audit/report_20251012_184853.txt
+
+Summary:
+--------
+❌ Vulnerabilities detected - review results above
+
+Next Steps:
+-----------
+1. Review detailed scan results in /home/idk/go/src/github.com/go-i2p/go-sshd/.security-audit
+2. Update vulnerable dependencies: go get -u <package>
+3. Run tests after updates: go test ./...
+4. Re-run security audit: ./security-audit.sh --full
+
