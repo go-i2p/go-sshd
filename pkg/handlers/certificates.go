@@ -220,13 +220,13 @@ func (cv *CertificateValidator) loadRevokedKeyFile(filename string) error {
 func (cv *CertificateValidator) isUserAuthority(auth gossh.PublicKey) bool {
 	fingerprint := gossh.FingerprintSHA256(auth)
 	_, trusted := cv.caKeys[fingerprint]
-	
+
 	if trusted {
 		cv.logger.Debugf("CA key recognized: %s", fingerprint)
 	} else {
 		cv.logger.Debugf("CA key not trusted: %s", fingerprint)
 	}
-	
+
 	return trusted
 }
 
@@ -234,11 +234,11 @@ func (cv *CertificateValidator) isUserAuthority(auth gossh.PublicKey) bool {
 // This callback is used by gossh.CertChecker during certificate validation.
 func (cv *CertificateValidator) isRevoked(cert *gossh.Certificate) bool {
 	revoked := cv.revokedSerials[cert.Serial]
-	
+
 	if revoked {
 		cv.logger.Warnf("Certificate serial %d is revoked (KeyId: %s)", cert.Serial, cert.KeyId)
 	}
-	
+
 	return revoked
 }
 

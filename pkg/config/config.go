@@ -476,8 +476,8 @@ func Load(filename string) (*Config, error) {
 		PubkeyAuthentication:         true,
 		KbdInteractiveAuthentication: true, // OpenSSH default: yes
 		AuthorizedKeysFile:           []string{".ssh/authorized_keys"},
-		TrustedUserCAKeys:            []string{},       // OpenSSH default: none
-		RevokedKeys:                  []string{},       // OpenSSH default: none
+		TrustedUserCAKeys:            []string{}, // OpenSSH default: none
+		RevokedKeys:                  []string{}, // OpenSSH default: none
 		PermitRootLogin:              "prohibit-password",
 		Subsystem:                    make(map[string]string),
 		AllowTcpForwarding:           true,

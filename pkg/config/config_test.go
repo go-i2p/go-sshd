@@ -117,39 +117,39 @@ func TestKbdInteractiveAuthenticationConfig(t *testing.T) {
 
 func TestCertificateAuthenticationConfig(t *testing.T) {
 	tests := []struct {
-		name            string
-		content         string
-		expectCAKeys    []string
-		expectRevoked   []string
+		name          string
+		content       string
+		expectCAKeys  []string
+		expectRevoked []string
 	}{
 		{
-			name:         "Single TrustedUserCAKeys",
-			content:      "TrustedUserCAKeys /etc/ssh/ca.pub\n",
-			expectCAKeys: []string{"/etc/ssh/ca.pub"},
+			name:          "Single TrustedUserCAKeys",
+			content:       "TrustedUserCAKeys /etc/ssh/ca.pub\n",
+			expectCAKeys:  []string{"/etc/ssh/ca.pub"},
 			expectRevoked: []string{},
 		},
 		{
-			name:         "Multiple TrustedUserCAKeys",
-			content:      "TrustedUserCAKeys /etc/ssh/ca1.pub\nTrustedUserCAKeys /etc/ssh/ca2.pub\n",
-			expectCAKeys: []string{"/etc/ssh/ca1.pub", "/etc/ssh/ca2.pub"},
+			name:          "Multiple TrustedUserCAKeys",
+			content:       "TrustedUserCAKeys /etc/ssh/ca1.pub\nTrustedUserCAKeys /etc/ssh/ca2.pub\n",
+			expectCAKeys:  []string{"/etc/ssh/ca1.pub", "/etc/ssh/ca2.pub"},
 			expectRevoked: []string{},
 		},
 		{
-			name:         "Single RevokedKeys",
-			content:      "RevokedKeys /etc/ssh/revoked_keys\n",
-			expectCAKeys: []string{},
+			name:          "Single RevokedKeys",
+			content:       "RevokedKeys /etc/ssh/revoked_keys\n",
+			expectCAKeys:  []string{},
 			expectRevoked: []string{"/etc/ssh/revoked_keys"},
 		},
 		{
-			name:         "Multiple RevokedKeys",
-			content:      "RevokedKeys /etc/ssh/revoked1\nRevokedKeys /etc/ssh/revoked2\n",
-			expectCAKeys: []string{},
+			name:          "Multiple RevokedKeys",
+			content:       "RevokedKeys /etc/ssh/revoked1\nRevokedKeys /etc/ssh/revoked2\n",
+			expectCAKeys:  []string{},
 			expectRevoked: []string{"/etc/ssh/revoked1", "/etc/ssh/revoked2"},
 		},
 		{
-			name:         "Both TrustedUserCAKeys and RevokedKeys",
-			content:      "TrustedUserCAKeys /etc/ssh/ca.pub\nRevokedKeys /etc/ssh/revoked_keys\n",
-			expectCAKeys: []string{"/etc/ssh/ca.pub"},
+			name:          "Both TrustedUserCAKeys and RevokedKeys",
+			content:       "TrustedUserCAKeys /etc/ssh/ca.pub\nRevokedKeys /etc/ssh/revoked_keys\n",
+			expectCAKeys:  []string{"/etc/ssh/ca.pub"},
 			expectRevoked: []string{"/etc/ssh/revoked_keys"},
 		},
 	}

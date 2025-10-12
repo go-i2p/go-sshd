@@ -474,12 +474,12 @@ func TestCertificateIntegration_WithAuthHandler(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		PubkeyAuthentication:  true,
-		TrustedUserCAKeys:     []string{caKeyFile},
-		RevokedKeys:           []string{},
-		PermitRootLogin:       "yes",
-		AllowUsers:            []string{},
-		DenyUsers:             []string{},
+		PubkeyAuthentication: true,
+		TrustedUserCAKeys:    []string{caKeyFile},
+		RevokedKeys:          []string{},
+		PermitRootLogin:      "yes",
+		AllowUsers:           []string{},
+		DenyUsers:            []string{},
 	}
 	logger, _ := test.NewNullLogger()
 
