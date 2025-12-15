@@ -313,7 +313,7 @@ func GenerateX11Cookie() (string, error) {
 
 // ParseDisplayNumber parses a DISPLAY environment variable value.
 // Returns host, display number, and screen number.
-func ParseDisplayNumber(display string) (host string, displayNum int, screenNum int, err error) {
+func ParseDisplayNumber(display string) (host string, displayNum, screenNum int, err error) {
 	// Default values
 	host = ""
 	displayNum = 0
