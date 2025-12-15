@@ -13,6 +13,7 @@ import (
 	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/embedded"
 	"github.com/go-i2p/go-sshd/pkg/server"
+	"github.com/go-i2p/onramp"
 	"github.com/spf13/cobra"
 )
 
@@ -81,7 +82,11 @@ advantages including single binary distribution and efficient resource usage.`,
 			}
 
 			// Create network listener
-			listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
+			garlic, err := onramp.NewGarlic("garlicsshd", "127.0.0.1:7656", onramp.OPT_WIDE)
+			if err != nil {
+				return fmt.Errorf("failed to create listener: %w", err)
+			}
+			listener, err := garlic.Listen()
 			if err != nil {
 				return fmt.Errorf("failed to create listener: %w", err)
 			}
