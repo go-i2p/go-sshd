@@ -487,6 +487,7 @@ func (m *x11MockContext) SetValue(key, value interface{}) {
 	}
 	m.values[key] = value
 }
+
 func (m *x11MockContext) Value(key interface{}) interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()

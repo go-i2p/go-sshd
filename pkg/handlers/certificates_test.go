@@ -84,7 +84,7 @@ func TestNewCertificateValidator_WithCAKeys(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestValidateCertificate_ValidCert(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestValidateCertificate_ExpiredCert(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestValidateCertificate_WrongPrincipal(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -254,14 +254,14 @@ func TestValidateCertificate_RevokedCert(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
 	// Write revoked keys file
 	revokedFile := filepath.Join(tmpDir, "revoked")
 	revokedData := "1\n" // Revoke certificate with serial 1
-	if err := os.WriteFile(revokedFile, []byte(revokedData), 0600); err != nil {
+	if err := os.WriteFile(revokedFile, []byte(revokedData), 0o600); err != nil {
 		t.Fatalf("Failed to write revoked keys file: %v", err)
 	}
 
@@ -307,7 +307,7 @@ func TestValidateCertificate_UntrustedCA(t *testing.T) {
 	// Write only trusted CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(trustedCAPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -343,7 +343,7 @@ func TestValidateCertificate_NotACertificate(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -388,7 +388,7 @@ func TestLoadCAKeyFile_MultipleKeys(t *testing.T) {
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	content := string(gossh.MarshalAuthorizedKey(ca1PubKey)) +
 		string(gossh.MarshalAuthorizedKey(ca2PubKey))
-	if err := os.WriteFile(caKeyFile, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestLoadRevokedKeyFile_MultipleSerials(t *testing.T) {
 	// Write revoked keys file with multiple serials
 	revokedFile := filepath.Join(tmpDir, "revoked")
 	revokedData := "1\n2\n3\n"
-	if err := os.WriteFile(revokedFile, []byte(revokedData), 0600); err != nil {
+	if err := os.WriteFile(revokedFile, []byte(revokedData), 0o600); err != nil {
 		t.Fatalf("Failed to write revoked keys file: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestLoadRevokedKeyFile_MultipleSerials(t *testing.T) {
 	}
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 
@@ -469,7 +469,7 @@ func TestCertificateIntegration_WithAuthHandler(t *testing.T) {
 	// Write CA public key to file
 	caKeyFile := filepath.Join(tmpDir, "ca.pub")
 	caKeyData := gossh.MarshalAuthorizedKey(caPubKey)
-	if err := os.WriteFile(caKeyFile, caKeyData, 0600); err != nil {
+	if err := os.WriteFile(caKeyFile, caKeyData, 0o600); err != nil {
 		t.Fatalf("Failed to write CA key file: %v", err)
 	}
 

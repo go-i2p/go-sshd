@@ -541,7 +541,6 @@ func TestGenerateKeysWithDefaults(t *testing.T) {
 func TestGenerateKeysFlag(t *testing.T) {
 	// Test that -G flag is recognized (will fail due to permissions but shouldn't be "unknown flag")
 	_, err := executeCommand("-G")
-
 	// The command should recognize the flag but fail due to permissions
 	if err != nil {
 		errStr := err.Error()

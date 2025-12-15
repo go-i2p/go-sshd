@@ -24,7 +24,8 @@ type Server struct {
 func NewServer(collector *Collector, addr string, logger interface {
 	Infof(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
-}) *Server {
+},
+) *Server {
 	mux := http.NewServeMux()
 
 	server := &Server{

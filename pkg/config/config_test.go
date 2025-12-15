@@ -922,7 +922,7 @@ MetricsAddress 0.0.0.0:9090
 	// Create temporary test config file
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "test_metrics_config")
-	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configFile, []byte(configContent), 0o644); err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
 
@@ -965,7 +965,7 @@ func TestInvalidMetricsAddress(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "test_invalid_metrics")
-	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configFile, []byte(configContent), 0o644); err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
 

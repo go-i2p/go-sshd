@@ -175,6 +175,7 @@ func TestKeyGenService(t *testing.T) {
 		t.Error("sshd-go-keygen.service should use -G flag, not -t flag for key generation")
 	}
 }
+
 func containsString(s, substr string) bool {
 	return len(substr) == 0 || len(s) >= len(substr) &&
 		(s == substr || s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||

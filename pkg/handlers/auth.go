@@ -443,7 +443,6 @@ func (a *AuthHandler) authenticateKeyboardInteractive(username string, challenge
 			return "", fmt.Errorf("unsupported PAM conversation style: %v", s)
 		}
 	})
-
 	if err != nil {
 		a.logger.Errorf("Failed to start PAM transaction for user %s: %v", username, err)
 		return false
