@@ -107,9 +107,11 @@ advantages including single binary distribution and efficient resource usage.`,
 				srv.Cleanup()
 			}()
 
-			// Start server (runs in foreground regardless of daemon flag for now)
-			// The daemon flag behavior is maintained for compatibility but both modes
-			// use the same code path with the embedded server
+			// Start server in foreground mode (by design for modern deployment)
+			// Go servers should not daemonize; instead, systemd or container runtimes
+			// manage the process lifecycle. The -D flag is accepted for OpenSSH CLI
+			// compatibility but the server always runs in foreground mode.
+			// See: https://www.freedesktop.org/software/systemd/man/daemon.html#New-Style%20Daemons
 			return srv.Start()
 		},
 	}
@@ -117,7 +119,10 @@ advantages including single binary distribution and efficient resource usage.`,
 	// OpenSSH-compatible command line flags
 	cmd.Flags().StringVarP(&configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
 	cmd.Flags().IntVarP(&port, "port", "p", 0, "port number (overrides config)")
-	cmd.Flags().BoolVarP(&daemon, "daemon", "D", false, "run in foreground mode")
+	// Note: -D flag accepted for OpenSSH compatibility but has no effect.
+	// Modern Go servers run in foreground by design for systemd/container management.
+	// This is the recommended approach for containerized environments and systemd services.
+	cmd.Flags().BoolVarP(&daemon, "daemon", "D", false, "run in foreground mode (default, for systemd/container compatibility)")
 	cmd.Flags().BoolVarP(&testConfig, "test", "t", false, "test configuration and exit")
 	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
 	cmd.Flags().BoolVarP(&inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
