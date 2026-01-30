@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"os/user"
 	"strings"
 	"testing"
 
@@ -9,6 +10,15 @@ import (
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 )
+
+// currentUserName returns the username of the current user.
+func currentUserName() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}
 
 func TestNewUserAuthorizer(t *testing.T) {
 	cfg := &config.Config{
@@ -281,6 +291,180 @@ func TestIsRootForcedCommandsRequired(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIsGroupAllowed_EmptyLists tests that all users are allowed when no group restrictions.
+func TestIsGroupAllowed_EmptyLists(t *testing.T) {
+	cfg := &config.Config{
+		AllowGroups: []string{},
+		DenyGroups:  []string{},
+	}
+	logger, _ := test.NewNullLogger()
+	authorizer := NewUserAuthorizer(cfg, logger)
+
+	// With empty lists and assuming we can't look up nonexistent user's groups,
+	// we should still allow because no restrictions are configured
+	// (the function returns true when no group restrictions are set, even on lookup failure)
+	result := authorizer.IsGroupAllowed("somefakeuser12345")
+	// Since no restrictions configured, should return true even on lookup failure
+	if !result {
+		t.Error("Expected user to be allowed when no group restrictions configured")
+	}
+}
+
+// TestIsGroupAllowed_NonexistentUserWithRestrictions tests lookup failure handling.
+func TestIsGroupAllowed_NonexistentUserWithRestrictions(t *testing.T) {
+	cfg := &config.Config{
+		AllowGroups: []string{"sshusers"},
+		DenyGroups:  []string{},
+	}
+	logger, _ := test.NewNullLogger()
+	authorizer := NewUserAuthorizer(cfg, logger)
+
+	// With AllowGroups set, a user we can't look up should be denied
+	result := authorizer.IsGroupAllowed("nonexistent_user_xyz_12345")
+	if result {
+		t.Error("Expected nonexistent user to be denied when AllowGroups is set")
+	}
+}
+
+// TestIsGroupAllowed_DenyGroupsWithRestrictions tests lookup failure handling with DenyGroups.
+func TestIsGroupAllowed_DenyGroupsWithRestrictions(t *testing.T) {
+	cfg := &config.Config{
+		AllowGroups: []string{},
+		DenyGroups:  []string{"badgroup"},
+	}
+	logger, _ := test.NewNullLogger()
+	authorizer := NewUserAuthorizer(cfg, logger)
+
+	// With DenyGroups set, a user we can't look up should be denied for safety
+	result := authorizer.IsGroupAllowed("nonexistent_user_xyz_12345")
+	if result {
+		t.Error("Expected nonexistent user to be denied when DenyGroups is set")
+	}
+}
+
+// TestGetUserGroups tests the group lookup functionality with the current user.
+func TestGetUserGroups(t *testing.T) {
+	cfg := &config.Config{}
+	logger, _ := test.NewNullLogger()
+	authorizer := NewUserAuthorizer(cfg, logger)
+
+	// Get current user to test with a real user
+	currentUser, err := getCurrentTestUser()
+	if err != nil {
+		t.Skipf("Cannot get current user for testing: %v", err)
+	}
+
+	groups, err := authorizer.getUserGroups(currentUser)
+	if err != nil {
+		t.Fatalf("getUserGroups failed for current user: %v", err)
+	}
+
+	// Current user should have at least one group
+	if len(groups) == 0 {
+		t.Error("Expected at least one group for current user")
+	}
+
+	t.Logf("Current user %s belongs to groups: %v", currentUser, groups)
+}
+
+// TestIsGroupAllowed_CurrentUser tests group checking with the actual current user.
+func TestIsGroupAllowed_CurrentUser(t *testing.T) {
+	currentUser, err := getCurrentTestUser()
+	if err != nil {
+		t.Skipf("Cannot get current user for testing: %v", err)
+	}
+
+	// Get current user's actual groups
+	cfg := &config.Config{}
+	logger, _ := test.NewNullLogger()
+	tempAuth := NewUserAuthorizer(cfg, logger)
+	groups, err := tempAuth.getUserGroups(currentUser)
+	if err != nil || len(groups) == 0 {
+		t.Skipf("Cannot get groups for testing: %v", err)
+	}
+
+	t.Run("AllowGroups matches current user's group", func(t *testing.T) {
+		cfg := &config.Config{
+			AllowGroups: []string{groups[0]}, // Use first actual group
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		if !authorizer.IsGroupAllowed(currentUser) {
+			t.Errorf("Expected user %s to be allowed (member of %s)", currentUser, groups[0])
+		}
+	})
+
+	t.Run("AllowGroups does not match current user", func(t *testing.T) {
+		cfg := &config.Config{
+			AllowGroups: []string{"nonexistent_group_xyz"},
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		if authorizer.IsGroupAllowed(currentUser) {
+			t.Error("Expected user to be denied when not in AllowGroups")
+		}
+	})
+
+	t.Run("DenyGroups matches current user's group", func(t *testing.T) {
+		cfg := &config.Config{
+			DenyGroups: []string{groups[0]}, // Deny first actual group
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		if authorizer.IsGroupAllowed(currentUser) {
+			t.Errorf("Expected user %s to be denied (member of denied group %s)", currentUser, groups[0])
+		}
+	})
+
+	t.Run("DenyGroups does not match current user", func(t *testing.T) {
+		cfg := &config.Config{
+			DenyGroups: []string{"nonexistent_group_xyz"},
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		if !authorizer.IsGroupAllowed(currentUser) {
+			t.Error("Expected user to be allowed when not in DenyGroups")
+		}
+	})
+
+	t.Run("DenyGroups takes precedence over AllowGroups", func(t *testing.T) {
+		cfg := &config.Config{
+			AllowGroups: []string{groups[0]},
+			DenyGroups:  []string{groups[0]}, // Same group in both
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		// DenyGroups should take precedence
+		if authorizer.IsGroupAllowed(currentUser) {
+			t.Error("Expected user to be denied when in both AllowGroups and DenyGroups")
+		}
+	})
+
+	t.Run("AllowGroups with wildcard", func(t *testing.T) {
+		// Create a pattern that matches the first group
+		pattern := groups[0][:len(groups[0])/2+1] + "*"
+		cfg := &config.Config{
+			AllowGroups: []string{pattern},
+		}
+		logger, _ := test.NewNullLogger()
+		authorizer := NewUserAuthorizer(cfg, logger)
+
+		if !authorizer.IsGroupAllowed(currentUser) {
+			t.Errorf("Expected user to be allowed by wildcard pattern %s matching group %s", pattern, groups[0])
+		}
+	})
+}
+
+// getCurrentTestUser returns the username of the current process owner.
+func getCurrentTestUser() (string, error) {
+	return currentUserName()
 }
 
 func TestIsRootLoginAllowed_InvalidValue(t *testing.T) {
