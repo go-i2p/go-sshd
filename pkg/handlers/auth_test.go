@@ -52,6 +52,7 @@ func (m *authMockContext) SetValue(key, value interface{}) {
 	m.values[key] = value
 	m.mu.Unlock()
 }
+
 func (m *authMockContext) Value(key interface{}) interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()

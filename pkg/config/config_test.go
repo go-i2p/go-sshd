@@ -384,6 +384,53 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/keys/%u
 	}
 }
 
+// TestLoadGroupAuthorizationConfig tests parsing of AllowGroups and DenyGroups directives.
+func TestLoadGroupAuthorizationConfig(t *testing.T) {
+	// Create temporary config file with group authorization directives
+	configContent := `# Test SSH group authorization config
+Port 2222
+AllowGroups sshusers admins wheel*
+DenyGroups noobs restricted*
+AllowUsers admin
+`
+
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "test_sshd_config")
+
+	err := os.WriteFile(configFile, []byte(configContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	// Load and parse configuration
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify AllowGroups
+	expectedAllowGroups := []string{"sshusers", "admins", "wheel*"}
+	if len(cfg.AllowGroups) != len(expectedAllowGroups) {
+		t.Errorf("Expected %d AllowGroups entries, got %d", len(expectedAllowGroups), len(cfg.AllowGroups))
+	}
+	for i, expected := range expectedAllowGroups {
+		if i >= len(cfg.AllowGroups) || cfg.AllowGroups[i] != expected {
+			t.Errorf("Expected AllowGroups[%d]=%q, got %q", i, expected, cfg.AllowGroups[i])
+		}
+	}
+
+	// Verify DenyGroups
+	expectedDenyGroups := []string{"noobs", "restricted*"}
+	if len(cfg.DenyGroups) != len(expectedDenyGroups) {
+		t.Errorf("Expected %d DenyGroups entries, got %d", len(expectedDenyGroups), len(cfg.DenyGroups))
+	}
+	for i, expected := range expectedDenyGroups {
+		if i >= len(cfg.DenyGroups) || cfg.DenyGroups[i] != expected {
+			t.Errorf("Expected DenyGroups[%d]=%q, got %q", i, expected, cfg.DenyGroups[i])
+		}
+	}
+}
+
 func TestLoggingDirectives(t *testing.T) {
 	// Create temporary config file with logging directives
 	tmpDir, err := os.MkdirTemp("", "sshd-config-test")

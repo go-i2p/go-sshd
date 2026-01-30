@@ -327,12 +327,12 @@ func (s *secureSFTPHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 
 	// Create parent directory if needed
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 
 	// Open file for writing - OS permissions still apply
-	file, err := os.OpenFile(path, flags, 0644)
+	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +385,7 @@ func (s *secureSFTPHandlers) Filecmd(r *sftp.Request) error {
 	case "Rmdir":
 		return os.Remove(path)
 	case "Mkdir":
-		return os.Mkdir(path, 0755)
+		return os.Mkdir(path, 0o755)
 	case "Remove":
 		return os.Remove(path)
 	case "Symlink":
