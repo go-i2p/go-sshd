@@ -36,6 +36,19 @@ func GetAuthorizedKeyOptions(s ssh.Session) *AuthorizedKeyOptions {
 	return nil
 }
 
+// GetAuthorizedKeyOptionsFromContext retrieves authorized_keys options directly from ssh.Context.
+// This is used during authentication before a full session is established.
+func GetAuthorizedKeyOptionsFromContext(ctx ssh.Context) *AuthorizedKeyOptions {
+	val := ctx.Value(ContextKeyAuthorizedKeyOptions)
+	if val == nil {
+		return nil
+	}
+	if opts, ok := val.(*AuthorizedKeyOptions); ok {
+		return opts
+	}
+	return nil
+}
+
 // AuthHandler handles SSH authentication using system libraries.
 // This is a thin wrapper around msteinert/pam and crypto/ssh for OpenSSH compatibility.
 type AuthHandler struct {
@@ -148,6 +161,16 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 		success := a.validatePublicKey(ctx, user, key, ctx.RemoteAddr().String())
 
 		if success {
+			// Check forced-commands-only for root after key validation
+			// At this point, key options are stored in context
+			if a.authorizer.IsRootForcedCommandsRequired(user) {
+				keyOptions := GetAuthorizedKeyOptionsFromContext(ctx)
+				if keyOptions == nil || keyOptions.Command == "" {
+					a.logger.Warnf("Root public key login denied: PermitRootLogin=forced-commands-only but key has no command= restriction")
+					return false
+				}
+				a.logger.Debugf("Root login with forced-commands-only accepted (command=%s)", keyOptions.Command)
+			}
 			a.logger.Infof("Public key authentication successful for user %s", user)
 		} else {
 			a.logger.Warnf("Public key authentication failed for user %s", user)

@@ -229,6 +229,60 @@ func TestIsRootLoginAllowed_ForcedCommandsOnly(t *testing.T) {
 	}
 }
 
+// TestIsRootForcedCommandsRequired tests the forced-commands-only check.
+func TestIsRootForcedCommandsRequired(t *testing.T) {
+	tests := []struct {
+		name            string
+		permitRootLogin string
+		username        string
+		expected        bool
+	}{
+		{
+			name:            "Root with forced-commands-only requires command",
+			permitRootLogin: "forced-commands-only",
+			username:        "root",
+			expected:        true,
+		},
+		{
+			name:            "Non-root with forced-commands-only does not require command",
+			permitRootLogin: "forced-commands-only",
+			username:        "admin",
+			expected:        false,
+		},
+		{
+			name:            "Root with yes does not require command",
+			permitRootLogin: "yes",
+			username:        "root",
+			expected:        false,
+		},
+		{
+			name:            "Root with prohibit-password does not require command",
+			permitRootLogin: "prohibit-password",
+			username:        "root",
+			expected:        false,
+		},
+		{
+			name:            "Root with no does not require command (denied by other check)",
+			permitRootLogin: "no",
+			username:        "root",
+			expected:        false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{PermitRootLogin: tc.permitRootLogin}
+			logger, _ := test.NewNullLogger()
+			authorizer := NewUserAuthorizer(cfg, logger)
+
+			result := authorizer.IsRootForcedCommandsRequired(tc.username)
+			if result != tc.expected {
+				t.Errorf("IsRootForcedCommandsRequired(%q) = %v, expected %v", tc.username, result, tc.expected)
+			}
+		})
+	}
+}
+
 func TestIsRootLoginAllowed_InvalidValue(t *testing.T) {
 	cfg := &config.Config{
 		PermitRootLogin: "invalid-value",

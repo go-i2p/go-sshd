@@ -109,12 +109,15 @@ func (ua *UserAuthorizer) IsRootLoginAllowed(username, authMethod string) bool {
 		}
 		return true
 	case "forced-commands-only":
-		// Would need to check if key has command= option
-		// For now, treat same as prohibit-password
+		// Block password and keyboard-interactive auth for root
+		// For public key auth, will need secondary check after key validation
+		// to verify the key has a command= option (done in auth.go)
 		if authMethod == "password" || authMethod == "keyboard-interactive" {
 			ua.logger.Infof("Root %s login denied by PermitRootLogin=forced-commands-only", authMethod)
 			return false
 		}
+		// For publickey, this check passes but key must have command= option
+		// (verified after key validation in auth handler)
 		return true
 	default:
 		// Unknown value, default to prohibit-password for security
@@ -124,6 +127,16 @@ func (ua *UserAuthorizer) IsRootLoginAllowed(username, authMethod string) bool {
 		}
 		return true
 	}
+}
+
+// IsRootForcedCommandsRequired returns true if root login is set to forced-commands-only.
+// When true, root login via public key must have a command= restriction in authorized_keys.
+// This should be called after successful key validation to verify the key has a forced command.
+func (ua *UserAuthorizer) IsRootForcedCommandsRequired(username string) bool {
+	if username != "root" {
+		return false // Not root, no restriction
+	}
+	return ua.config.PermitRootLogin == "forced-commands-only"
 }
 
 // matchUserPattern matches a user against a pattern supporting wildcards and user@host format.

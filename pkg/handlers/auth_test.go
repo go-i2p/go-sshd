@@ -74,6 +74,47 @@ type authMockAddr struct {
 func (m *authMockAddr) Network() string { return "tcp" }
 func (m *authMockAddr) String() string  { return m.addr }
 
+// TestGetAuthorizedKeyOptionsFromContext tests context-based key options retrieval.
+func TestGetAuthorizedKeyOptionsFromContext(t *testing.T) {
+	t.Run("Returns nil when no options set", func(t *testing.T) {
+		ctx := newAuthMockContext("testuser")
+		opts := GetAuthorizedKeyOptionsFromContext(ctx)
+		if opts != nil {
+			t.Error("Expected nil options when none set in context")
+		}
+	})
+
+	t.Run("Returns options when set in context", func(t *testing.T) {
+		ctx := newAuthMockContext("testuser")
+		expectedOpts := &AuthorizedKeyOptions{
+			Command:          "/bin/backup",
+			NoPortForwarding: true,
+		}
+		ctx.SetValue(ContextKeyAuthorizedKeyOptions, expectedOpts)
+
+		opts := GetAuthorizedKeyOptionsFromContext(ctx)
+		if opts == nil {
+			t.Fatal("Expected options to be returned")
+		}
+		if opts.Command != "/bin/backup" {
+			t.Errorf("Expected command '/bin/backup', got '%s'", opts.Command)
+		}
+		if !opts.NoPortForwarding {
+			t.Error("Expected NoPortForwarding to be true")
+		}
+	})
+
+	t.Run("Returns nil for wrong type in context", func(t *testing.T) {
+		ctx := newAuthMockContext("testuser")
+		ctx.SetValue(ContextKeyAuthorizedKeyOptions, "not-an-options-struct")
+
+		opts := GetAuthorizedKeyOptionsFromContext(ctx)
+		if opts != nil {
+			t.Error("Expected nil when context contains wrong type")
+		}
+	})
+}
+
 func TestNewAuthHandler(t *testing.T) {
 	cfg := &config.Config{
 		PasswordAuthentication: true,
