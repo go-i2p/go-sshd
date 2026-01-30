@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"strings"
 	"syscall"
 
 	"github.com/gliderlabs/ssh"
@@ -196,24 +198,72 @@ func (h *ShellHandler) waitForShellCompletion(s ssh.Session, cmd *exec.Cmd, user
 }
 
 // getUserShell gets the user's default shell from the system.
-// Uses standard library user package for system integration.
+// Parses /etc/passwd to find the user's configured shell, following OpenSSH behavior.
+// Falls back to /bin/bash if the shell cannot be determined.
 func (h *ShellHandler) getUserShell(username string) (string, error) {
-	// Use os/user package for system user information
+	// First verify the user exists using os/user package
 	u, err := user.Lookup(username)
 	if err != nil {
-		// If user lookup fails, default to bash
 		h.logger.Debugf("User lookup failed for %s, defaulting to bash: %v", username, err)
 		return "/bin/bash", nil
 	}
 
-	// Use user's configured shell or default to bash
-	if u.HomeDir != "" {
-		// Check user's configured shell (basic implementation)
-		// In production, this could parse /etc/passwd or use getpwnam
+	// Parse /etc/passwd to get the user's shell
+	// Format: username:password:uid:gid:gecos:home:shell
+	shell, err := h.getShellFromPasswd(u.Uid)
+	if err != nil {
+		h.logger.Debugf("Could not get shell from passwd for %s, defaulting to bash: %v", username, err)
 		return "/bin/bash", nil
 	}
 
-	return "/bin/bash", nil
+	// Verify the shell exists and is executable
+	if _, err := os.Stat(shell); err != nil {
+		h.logger.Debugf("Shell %s not found for user %s, defaulting to bash: %v", shell, username, err)
+		return "/bin/bash", nil
+	}
+
+	h.logger.Debugf("Using shell %s for user %s", shell, username)
+	return shell, nil
+}
+
+// getShellFromPasswd parses /etc/passwd to find the shell for the given UID.
+// Returns the shell path or an error if the user is not found.
+func (h *ShellHandler) getShellFromPasswd(uid string) (string, error) {
+	file, err := os.Open("/etc/passwd")
+	if err != nil {
+		return "", fmt.Errorf("cannot open /etc/passwd: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse passwd entry: username:password:uid:gid:gecos:home:shell
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+
+		// Match by UID
+		if fields[2] == uid {
+			shell := strings.TrimSpace(fields[6])
+			if shell == "" {
+				return "/bin/bash", nil // Empty shell field, default to bash
+			}
+			return shell, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading /etc/passwd: %w", err)
+	}
+
+	return "", fmt.Errorf("user with UID %s not found in /etc/passwd", uid)
 }
 
 // buildEnvironment creates environment variables for the shell session.
