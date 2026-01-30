@@ -319,12 +319,17 @@ func (s *StandardEmbeddedSSHServer) configureSession(sshServer *ssh.Server) erro
 			Subsystem: map[string]string{
 				"sftp": "internal-sftp",
 			},
+			SFTPRootDir: sessionCfg.SFTPRootDir, // Wire SFTPRootDir from session config
 		}
 		sftpHandler := handlers.NewSFTPHandler(cfg, s.logger)
 		sshServer.SubsystemHandlers = map[string]ssh.SubsystemHandler{
 			"sftp": sftpHandler.CreateSubsystemHandler(),
 		}
-		s.logger.Info("SFTP subsystem enabled")
+		if sessionCfg.SFTPRootDir != "" {
+			s.logger.Infof("SFTP subsystem enabled with root directory: %s", sessionCfg.SFTPRootDir)
+		} else {
+			s.logger.Info("SFTP subsystem enabled")
+		}
 	}
 
 	return nil

@@ -61,6 +61,7 @@ func TestGetSupportedSubsystems(t *testing.T) {
 
 func TestConfigureChroot(t *testing.T) {
 	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel) // Reduce log noise in tests
 	cfg := &config.Config{}
 	handler := NewSFTPHandler(cfg, logger)
 
@@ -79,6 +80,59 @@ func TestConfigureChroot(t *testing.T) {
 	assert.NoError(t, err)
 	// Should be either user's home directory or "/" as fallback
 	assert.True(t, chrootPath == "/" || len(chrootPath) > 1)
+}
+
+func TestConfigureChrootWithSFTPRootDir(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	t.Run("SFTPRootDir configured and valid", func(t *testing.T) {
+		// Use /tmp as it exists on all systems
+		cfg := &config.Config{
+			SFTPRootDir: "/tmp",
+		}
+		handler := NewSFTPHandler(cfg, logger)
+
+		chrootPath, err := handler.ConfigureChroot("testuser")
+		assert.NoError(t, err)
+		assert.Equal(t, "/tmp", chrootPath, "Should use configured SFTPRootDir")
+	})
+
+	t.Run("SFTPRootDir configured but nonexistent", func(t *testing.T) {
+		cfg := &config.Config{
+			SFTPRootDir: "/nonexistent/path/that/does/not/exist",
+		}
+		handler := NewSFTPHandler(cfg, logger)
+
+		// Should fall back to "/" for nonexistent user when SFTPRootDir is invalid
+		chrootPath, err := handler.ConfigureChroot("nonexistentuser123456")
+		assert.NoError(t, err)
+		assert.Equal(t, "/", chrootPath, "Should fall back when SFTPRootDir doesn't exist")
+	})
+
+	t.Run("Empty SFTPRootDir uses home directory", func(t *testing.T) {
+		cfg := &config.Config{
+			SFTPRootDir: "", // Empty - should use home directory
+		}
+		handler := NewSFTPHandler(cfg, logger)
+
+		// Root should get "/" regardless
+		chrootPath, err := handler.ConfigureChroot("root")
+		assert.NoError(t, err)
+		assert.Equal(t, "/", chrootPath)
+	})
+
+	t.Run("SFTPRootDir takes priority over home directory", func(t *testing.T) {
+		cfg := &config.Config{
+			SFTPRootDir: "/tmp",
+		}
+		handler := NewSFTPHandler(cfg, logger)
+
+		// Even for root, SFTPRootDir should take priority when configured
+		chrootPath, err := handler.ConfigureChroot("root")
+		assert.NoError(t, err)
+		assert.Equal(t, "/tmp", chrootPath, "SFTPRootDir should take priority")
+	})
 }
 
 func TestValidateFileOperation(t *testing.T) {

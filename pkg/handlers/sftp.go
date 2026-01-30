@@ -97,7 +97,23 @@ func (h *SFTPHandler) GetSupportedSubsystems() []string {
 // ConfigureChroot configures SFTP chroot functionality based on user and security settings.
 // This implements a secure default approach where users are restricted to their home directories.
 // Following OpenSSH patterns for SFTP security and user isolation.
+// Priority: 1) Configured SFTPRootDir 2) User home directory 3) Fallback to /
 func (h *SFTPHandler) ConfigureChroot(username string) (string, error) {
+	// Check for configured SFTP root directory (highest priority)
+	if h.config != nil && h.config.SFTPRootDir != "" {
+		chrootPath := h.config.SFTPRootDir
+		if stat, err := os.Stat(chrootPath); err != nil {
+			h.logger.Warnf("Configured SFTP root directory %s not accessible: %v", chrootPath, err)
+			// Fall through to home directory lookup
+		} else if !stat.IsDir() {
+			h.logger.Warnf("Configured SFTP root path %s is not a directory", chrootPath)
+			// Fall through to home directory lookup
+		} else {
+			h.logger.Infof("SFTP using configured root directory for user %s: %s", username, chrootPath)
+			return chrootPath, nil
+		}
+	}
+
 	// Get user information to determine home directory
 	userInfo, err := user.Lookup(username)
 	if err != nil {

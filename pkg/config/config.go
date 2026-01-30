@@ -111,6 +111,7 @@ type Config struct {
 
 	// Feature settings
 	Subsystem            map[string]string `json:"subsystem"`
+	SFTPRootDir          string            `json:"sftp_root_dir"` // Custom SFTP root directory (chroot-like)
 	AllowTcpForwarding   bool              `json:"allow_tcp_forwarding"`
 	AllowAgentForwarding bool              `json:"allow_agent_forwarding"`
 	X11Forwarding        bool              `json:"x11_forwarding"`
