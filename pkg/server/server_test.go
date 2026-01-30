@@ -296,3 +296,82 @@ func TestServerStop(t *testing.T) {
 		t.Error("Context should be cancelled after stop")
 	}
 }
+
+func TestMetricsServerIntegration(t *testing.T) {
+	// Test that metrics server is created when enabled
+	cfg := &config.Config{
+		Port:           0, // Let system choose port
+		LogLevel:       "ERROR",
+		MetricsEnabled: true,
+		MetricsAddress: "127.0.0.1:0", // Use port 0 to avoid conflicts
+	}
+
+	server, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	// Verify metrics collector was created
+	if server.metricsCollector == nil {
+		t.Error("Metrics collector should be created when MetricsEnabled is true")
+	}
+
+	// Verify metrics server was created
+	if server.metricsServer == nil {
+		t.Error("Metrics server should be created when MetricsEnabled is true")
+	}
+}
+
+func TestMetricsServerDisabled(t *testing.T) {
+	// Test that metrics server is NOT created when disabled
+	cfg := &config.Config{
+		Port:           0,
+		LogLevel:       "ERROR",
+		MetricsEnabled: false, // Explicitly disabled
+	}
+
+	server, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	// Verify metrics collector was NOT created
+	if server.metricsCollector != nil {
+		t.Error("Metrics collector should be nil when MetricsEnabled is false")
+	}
+
+	// Verify metrics server was NOT created
+	if server.metricsServer != nil {
+		t.Error("Metrics server should be nil when MetricsEnabled is false")
+	}
+}
+
+func TestMetricsServerStartStop(t *testing.T) {
+	// Test that metrics server can be started and stopped
+	cfg := &config.Config{
+		Port:           0,
+		LogLevel:       "ERROR",
+		MetricsEnabled: true,
+		MetricsAddress: "127.0.0.1:0", // Use port 0 to get random available port
+	}
+
+	server, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Start the metrics server directly
+	if err := server.metricsServer.Start(); err != nil {
+		t.Fatalf("Failed to start metrics server: %v", err)
+	}
+
+	// Stop the metrics server
+	if err := server.metricsServer.Stop(); err != nil {
+		t.Errorf("Failed to stop metrics server: %v", err)
+	}
+
+	// Clean up the rest
+	server.Stop()
+}
