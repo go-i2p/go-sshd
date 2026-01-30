@@ -47,3 +47,4 @@ logs/
 # Runtime
 *.pid
 *.sock
+*.private
