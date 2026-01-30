@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"fmt"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -137,6 +138,81 @@ func (ua *UserAuthorizer) IsRootForcedCommandsRequired(username string) bool {
 		return false // Not root, no restriction
 	}
 	return ua.config.PermitRootLogin == "forced-commands-only"
+}
+
+// IsGroupAllowed checks if a user is allowed to connect based on AllowGroups and DenyGroups.
+// Follows OpenSSH precedence: DenyGroups is checked first, then AllowGroups.
+// Uses os/user package to look up the user's group memberships from the system.
+func (ua *UserAuthorizer) IsGroupAllowed(username string) bool {
+	// Get user's group memberships from the system
+	userGroups, err := ua.getUserGroups(username)
+	if err != nil {
+		ua.logger.Warnf("Failed to get groups for user %s: %v", username, err)
+		// If we can't get groups and groups are configured, deny for safety
+		if len(ua.config.AllowGroups) > 0 || len(ua.config.DenyGroups) > 0 {
+			ua.logger.Infof("Denying user %s due to group lookup failure with group restrictions configured", username)
+			return false
+		}
+		// No group restrictions configured, allow
+		return true
+	}
+
+	// Check DenyGroups first (takes precedence)
+	for _, denyPattern := range ua.config.DenyGroups {
+		for _, userGroup := range userGroups {
+			if ua.matchWildcard(denyPattern, userGroup) {
+				ua.logger.Infof("User %s denied by DenyGroups pattern: %s (member of %s)", username, denyPattern, userGroup)
+				return false
+			}
+		}
+	}
+
+	// If AllowGroups is specified, user must be a member of at least one allowed group
+	if len(ua.config.AllowGroups) > 0 {
+		for _, allowPattern := range ua.config.AllowGroups {
+			for _, userGroup := range userGroups {
+				if ua.matchWildcard(allowPattern, userGroup) {
+					ua.logger.Debugf("User %s allowed by AllowGroups pattern: %s (member of %s)", username, allowPattern, userGroup)
+					return true
+				}
+			}
+		}
+		ua.logger.Infof("User %s not in any AllowGroups", username)
+		return false
+	}
+
+	// If no AllowGroups specified, user is allowed (unless denied above)
+	return true
+}
+
+// getUserGroups returns the list of group names that a user belongs to.
+// Uses the os/user package for portable group lookups.
+func (ua *UserAuthorizer) getUserGroups(username string) ([]string, error) {
+	// Look up the user
+	u, err := user.Lookup(username)
+	if err != nil {
+		return nil, fmt.Errorf("user lookup failed: %w", err)
+	}
+
+	// Get the user's group IDs
+	groupIDs, err := u.GroupIds()
+	if err != nil {
+		return nil, fmt.Errorf("group lookup failed: %w", err)
+	}
+
+	// Convert group IDs to group names
+	var groupNames []string
+	for _, gid := range groupIDs {
+		grp, err := user.LookupGroupId(gid)
+		if err != nil {
+			// Log but continue - some system groups may not resolve
+			ua.logger.Debugf("Could not resolve group ID %s: %v", gid, err)
+			continue
+		}
+		groupNames = append(groupNames, grp.Name)
+	}
+
+	return groupNames, nil
 }
 
 // matchUserPattern matches a user against a pattern supporting wildcards and user@host format.

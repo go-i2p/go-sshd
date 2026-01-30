@@ -106,6 +106,8 @@ type Config struct {
 	PermitRootLogin string   `json:"permit_root_login"`
 	AllowUsers      []string `json:"allow_users"`
 	DenyUsers       []string `json:"deny_users"`
+	AllowGroups     []string `json:"allow_groups"`
+	DenyGroups      []string `json:"deny_groups"`
 
 	// Feature settings
 	Subsystem            map[string]string `json:"subsystem"`
@@ -667,6 +669,18 @@ func (c *Config) parseDirective(directive string, args []string) error {
 			return fmt.Errorf("denyusers requires at least one argument")
 		}
 		c.DenyUsers = append(c.DenyUsers, args...)
+
+	case "allowgroups":
+		if len(args) == 0 {
+			return fmt.Errorf("allowgroups requires at least one argument")
+		}
+		c.AllowGroups = append(c.AllowGroups, args...)
+
+	case "denygroups":
+		if len(args) == 0 {
+			return fmt.Errorf("denygroups requires at least one argument")
+		}
+		c.DenyGroups = append(c.DenyGroups, args...)
 
 	case "authorizedkeysfile":
 		if len(args) == 0 {

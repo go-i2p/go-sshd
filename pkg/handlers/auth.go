@@ -96,6 +96,12 @@ func (a *AuthHandler) CreatePasswordHandler() ssh.PasswordHandler {
 			return false
 		}
 
+		// Check group authorization
+		if !a.authorizer.IsGroupAllowed(user) {
+			a.logger.Warnf("User %s not in allowed groups", user)
+			return false
+		}
+
 		// Check root login permissions
 		if !a.authorizer.IsRootLoginAllowed(user, "password") {
 			a.logger.Warnf("Root password login denied for user %s", user)
@@ -133,6 +139,12 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 		// Check user authorization first (before expensive key operations)
 		if !a.authorizer.IsUserAllowed(user, ctx.RemoteAddr().String()) {
 			a.logger.Warnf("User %s not authorized for access", user)
+			return false
+		}
+
+		// Check group authorization
+		if !a.authorizer.IsGroupAllowed(user) {
+			a.logger.Warnf("User %s not in allowed groups", user)
 			return false
 		}
 
@@ -198,6 +210,12 @@ func (a *AuthHandler) CreateKeyboardInteractiveHandler() ssh.KeyboardInteractive
 		// Check user authorization first (before expensive auth operations)
 		if !a.authorizer.IsUserAllowed(user, ctx.RemoteAddr().String()) {
 			a.logger.Warnf("User %s not authorized for access", user)
+			return false
+		}
+
+		// Check group authorization
+		if !a.authorizer.IsGroupAllowed(user) {
+			a.logger.Warnf("User %s not in allowed groups", user)
 			return false
 		}
 
