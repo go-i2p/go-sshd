@@ -1,19 +1,78 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/gliderlabs/ssh"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 )
+
+// authMockContext implements ssh.Context for testing authentication.
+// Supports SetValue/Value for storing authorized_keys options.
+type authMockContext struct {
+	context.Context
+	user        string
+	remoteAddr  net.Addr
+	permissions *ssh.Permissions
+	values      map[interface{}]interface{}
+	mu          sync.Mutex
+}
+
+func newAuthMockContext(username string) *authMockContext {
+	return &authMockContext{
+		Context:    context.Background(),
+		user:       username,
+		remoteAddr: &authMockAddr{addr: "127.0.0.1:12345"},
+		values:     make(map[interface{}]interface{}),
+	}
+}
+
+func (m *authMockContext) User() string                  { return m.user }
+func (m *authMockContext) SessionID() string             { return "test-session" }
+func (m *authMockContext) ClientVersion() string         { return "test-client" }
+func (m *authMockContext) ServerVersion() string         { return "test-server" }
+func (m *authMockContext) RemoteAddr() net.Addr          { return m.remoteAddr }
+func (m *authMockContext) LocalAddr() net.Addr           { return &authMockAddr{addr: "127.0.0.1:22"} }
+func (m *authMockContext) Permissions() *ssh.Permissions { return m.permissions }
+func (m *authMockContext) SetValue(key, value interface{}) {
+	m.mu.Lock()
+	m.values[key] = value
+	m.mu.Unlock()
+}
+func (m *authMockContext) Value(key interface{}) interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v, ok := m.values[key]; ok {
+		return v
+	}
+	return m.Context.Value(key)
+}
+func (m *authMockContext) Deadline() (deadline time.Time, ok bool) { return time.Time{}, false }
+func (m *authMockContext) Done() <-chan struct{}                   { return nil }
+func (m *authMockContext) Err() error                              { return nil }
+func (m *authMockContext) Lock()                                   { m.mu.Lock() }
+func (m *authMockContext) Unlock()                                 { m.mu.Unlock() }
+
+// authMockAddr implements net.Addr for testing.
+type authMockAddr struct {
+	addr string
+}
+
+func (m *authMockAddr) Network() string { return "tcp" }
+func (m *authMockAddr) String() string  { return m.addr }
 
 func TestNewAuthHandler(t *testing.T) {
 	cfg := &config.Config{
@@ -91,7 +150,7 @@ func TestValidatePublicKey_NoUser(t *testing.T) {
 		t.Fatalf("Failed to generate test key: %v", err)
 	}
 
-	result := handler.validatePublicKey("nonexistentuser123456", publicKey, "127.0.0.1:12345")
+	result := handler.validatePublicKey(newAuthMockContext("nonexistentuser123456"), "nonexistentuser123456", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail for non-existent user")
 	}
@@ -133,7 +192,8 @@ func TestValidatePublicKey_WithTestKey(t *testing.T) {
 	}
 
 	// Test the key validation function directly
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key to be accepted from authorized_keys file")
 	}
@@ -178,7 +238,8 @@ func TestValidatePublicKey_WrongKey(t *testing.T) {
 	}
 
 	// Try to authenticate with key2 (should fail)
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey2, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey2, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected public key authentication to fail with wrong key")
 	}
@@ -202,7 +263,8 @@ func TestCheckAuthorizedKeysFile_NoFile(t *testing.T) {
 		HomeDir:  "/nonexistent",
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail when authorized_keys file doesn't exist")
 	}
@@ -239,7 +301,8 @@ func TestCheckAuthorizedKeysFile_EmptyFile(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected authentication to fail with empty authorized_keys file")
 	}
@@ -283,7 +346,8 @@ func TestCheckAuthorizedKeysFile_WithComments(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key to be found despite comments and empty lines")
 	}
@@ -324,19 +388,19 @@ func TestAuthHandler_UserAuthorization(t *testing.T) {
 	}
 
 	// Test denied user
-	result := handler.validatePublicKey("denieduser", publicKey, "127.0.0.1:12345")
+	result := handler.validatePublicKey(newAuthMockContext("denieduser"), "denieduser", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected denieduser to be rejected by authorization")
 	}
 
 	// Test non-allowed user (when AllowUsers is specified)
-	result = handler.validatePublicKey("randomuser", publicKey, "127.0.0.1:12345")
+	result = handler.validatePublicKey(newAuthMockContext("randomuser"), "randomuser", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected randomuser to be rejected when not in AllowUsers")
 	}
 
 	// Test root user (should be denied by PermitRootLogin=no)
-	result = handler.validatePublicKey("root", publicKey, "127.0.0.1:12345")
+	result = handler.validatePublicKey(newAuthMockContext("root"), "root", publicKey, "127.0.0.1:12345")
 	if result {
 		t.Error("Expected root to be rejected by PermitRootLogin=no")
 	}
@@ -379,9 +443,26 @@ func TestCheckAuthorizedKeysFile_WithOptions(t *testing.T) {
 		t.Fatalf("Failed to write authorized_keys file: %v", err)
 	}
 
-	result := handler.checkAuthorizedKeysFile(mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
+	ctx := newAuthMockContext("testuser")
+	result := handler.checkAuthorizedKeysFile(ctx, mockUser, ".ssh/authorized_keys", publicKey, "127.0.0.1:12345")
 	if !result {
 		t.Error("Expected public key with options to be accepted")
+	}
+
+	// Verify that command restriction was stored in context
+	storedOptions := ctx.Value(ContextKeyAuthorizedKeyOptions)
+	if storedOptions == nil {
+		t.Error("Expected authorized key options to be stored in context")
+	} else {
+		options, ok := storedOptions.(*AuthorizedKeyOptions)
+		if !ok {
+			t.Error("Stored options should be *AuthorizedKeyOptions type")
+		} else if options.Command != "/bin/backup" {
+			t.Errorf("Expected command '/bin/backup', got '%s'", options.Command)
+		}
+		if options.NoPortForwarding != true {
+			t.Error("Expected NoPortForwarding to be true")
+		}
 	}
 }
 

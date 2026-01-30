@@ -30,10 +30,14 @@ func NewShellHandler(logger *logrus.Logger) *ShellHandler {
 
 // CreateSessionHandler creates the SSH session handler for interactive shells.
 // This integrates with gliderlabs/ssh session management using standard libraries.
+// Enforces authorized_keys command restrictions when present.
 func (h *ShellHandler) CreateSessionHandler() ssh.Handler {
 	return func(s ssh.Session) {
 		user := s.User()
 		h.logger.Infof("Shell session started for user %s from %s", user, s.RemoteAddr())
+
+		// Check for authorized_keys options (command restrictions, no-pty, etc.)
+		keyOpts := GetAuthorizedKeyOptions(s)
 
 		// Get user's default shell from system
 		shell, err := h.getUserShell(user)
@@ -45,10 +49,19 @@ func (h *ShellHandler) CreateSessionHandler() ssh.Handler {
 
 		// Handle PTY requests using golang.org/x/crypto/ssh/terminal
 		ptyReq, winCh, isPty := s.Pty()
+
+		// Check for no-pty restriction from authorized_keys
+		if isPty && keyOpts != nil && keyOpts.NoPTY {
+			h.logger.Warnf("PTY denied for user %s: key has no-pty restriction", user)
+			fmt.Fprintf(s, "PTY allocation disabled by authorized_keys restriction\r\n")
+			s.Exit(1)
+			return
+		}
+
 		if isPty {
-			h.handlePTYSession(s, shell, ptyReq, winCh)
+			h.handlePTYSession(s, shell, ptyReq, winCh, keyOpts)
 		} else {
-			h.handleNonPTYSession(s, shell)
+			h.handleNonPTYSession(s, shell, keyOpts)
 		}
 
 		h.logger.Infof("Shell session ended for user %s", user)
@@ -57,12 +70,23 @@ func (h *ShellHandler) CreateSessionHandler() ssh.Handler {
 
 // handlePTYSession handles interactive shell sessions with PTY support.
 // Uses gliderlabs/ssh built-in PTY functionality for proper terminal emulation.
-func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.Pty, winCh <-chan ssh.Window) {
+// Enforces command restrictions from authorized_keys when present.
+func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.Pty, winCh <-chan ssh.Window, keyOpts *AuthorizedKeyOptions) {
 	user := s.User()
 	h.logger.Debugf("Starting PTY session for user %s with terminal %s", user, ptyReq.Term)
 
-	// Create shell command with proper environment
-	cmd := exec.Command(shell, "-l") // Login shell
+	var cmd *exec.Cmd
+
+	// Check for command restriction from authorized_keys
+	if keyOpts != nil && keyOpts.Command != "" {
+		// With command restriction, run the forced command instead of interactive shell
+		h.logger.Infof("Enforcing command restriction for user %s: %s", user, keyOpts.Command)
+		cmd = exec.Command(shell, "-c", keyOpts.Command)
+	} else {
+		// Create shell command with proper environment
+		cmd = exec.Command(shell, "-l") // Login shell
+	}
+
 	cmd.Env = h.buildEnvironment(s, ptyReq.Term)
 
 	// Connect session I/O directly to shell process
@@ -93,13 +117,33 @@ func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.
 
 // handleNonPTYSession handles non-interactive shell sessions (command execution).
 // Uses standard os/exec without PTY for simple command execution.
-func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string) {
+// Enforces command restrictions from authorized_keys when present.
+func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string, keyOpts *AuthorizedKeyOptions) {
 	user := s.User()
 	h.logger.Debugf("Starting non-PTY session for user %s", user)
 
+	var commandToRun string
+
+	// Check for command restriction from authorized_keys
+	if keyOpts != nil && keyOpts.Command != "" {
+		// With command restriction, always run the forced command
+		// The original command is available via SSH_ORIGINAL_COMMAND environment variable
+		h.logger.Infof("Enforcing command restriction for user %s: %s (original: %s)", user, keyOpts.Command, s.RawCommand())
+		commandToRun = keyOpts.Command
+	} else {
+		// Use the command requested by the client
+		commandToRun = s.RawCommand()
+	}
+
 	// Get command from session
-	cmd := exec.Command(shell, "-c", s.RawCommand())
-	cmd.Env = h.buildEnvironment(s, "")
+	cmd := exec.Command(shell, "-c", commandToRun)
+
+	// Build environment, adding SSH_ORIGINAL_COMMAND if there's a forced command
+	env := h.buildEnvironment(s, "")
+	if keyOpts != nil && keyOpts.Command != "" && s.RawCommand() != "" {
+		env = append(env, fmt.Sprintf("SSH_ORIGINAL_COMMAND=%s", s.RawCommand()))
+	}
+	cmd.Env = env
 
 	// Connect session I/O directly to command
 	cmd.Stdin = s

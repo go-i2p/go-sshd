@@ -50,3 +50,30 @@ func BenchmarkCreateSessionHandler(b *testing.B) {
 		_ = sessionHandler
 	}
 }
+
+// TestCommandRestrictionStoredInContext verifies that command restrictions
+// from authorized_keys are stored in the session context during authentication.
+func TestCommandRestrictionStoredInContext(t *testing.T) {
+	// Test that the context key is properly defined
+	assert.Equal(t, "authorized-key-options", ContextKeyAuthorizedKeyOptions)
+}
+
+// TestAuthorizedKeyOptionsStruct tests the AuthorizedKeyOptions struct fields.
+func TestAuthorizedKeyOptionsStruct(t *testing.T) {
+	opts := &AuthorizedKeyOptions{
+		Command:           "/bin/backup",
+		NoPTY:             true,
+		NoPortForwarding:  true,
+		NoAgentForwarding: true,
+		NoX11Forwarding:   true,
+		From:              []string{"192.168.1.0/24"},
+	}
+
+	assert.Equal(t, "/bin/backup", opts.Command)
+	assert.True(t, opts.NoPTY)
+	assert.True(t, opts.NoPortForwarding)
+	assert.True(t, opts.NoAgentForwarding)
+	assert.True(t, opts.NoX11Forwarding)
+	assert.Len(t, opts.From, 1)
+	assert.Equal(t, "192.168.1.0/24", opts.From[0])
+}

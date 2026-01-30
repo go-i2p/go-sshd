@@ -19,6 +19,23 @@ import (
 	"github.com/go-i2p/go-sshd/pkg/config"
 )
 
+// ContextKeyAuthorizedKeyOptions is a context key for storing authorized_keys options.
+// The associated value will be of type *AuthorizedKeyOptions.
+const ContextKeyAuthorizedKeyOptions = "authorized-key-options"
+
+// GetAuthorizedKeyOptions retrieves the authorized_keys options from a session context.
+// Returns nil if no options are set (e.g., password authentication or key without options).
+func GetAuthorizedKeyOptions(s ssh.Session) *AuthorizedKeyOptions {
+	val := s.Context().Value(ContextKeyAuthorizedKeyOptions)
+	if val == nil {
+		return nil
+	}
+	if opts, ok := val.(*AuthorizedKeyOptions); ok {
+		return opts
+	}
+	return nil
+}
+
 // AuthHandler handles SSH authentication using system libraries.
 // This is a thin wrapper around msteinert/pam and crypto/ssh for OpenSSH compatibility.
 type AuthHandler struct {
@@ -128,7 +145,7 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 		}
 
 		// Use crypto/ssh for authorized keys validation (standard public keys and fallback for certs)
-		success := a.validatePublicKey(user, key, ctx.RemoteAddr().String())
+		success := a.validatePublicKey(ctx, user, key, ctx.RemoteAddr().String())
 
 		if success {
 			a.logger.Infof("Public key authentication successful for user %s", user)
@@ -222,7 +239,7 @@ func (a *AuthHandler) authenticateWithPAM(username, password string) bool {
 
 // validatePublicKey validates a public key against authorized_keys files.
 // Uses golang.org/x/crypto/ssh for all key parsing and comparison.
-func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey, remoteAddr string) bool {
+func (a *AuthHandler) validatePublicKey(ctx ssh.Context, username string, clientKey ssh.PublicKey, remoteAddr string) bool {
 	// Get user information to find home directory
 	userInfo, err := user.Lookup(username)
 	if err != nil {
@@ -232,7 +249,7 @@ func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey
 
 	// Check all configured authorized keys files
 	for _, keyFile := range a.config.AuthorizedKeysFile {
-		if a.checkAuthorizedKeysFile(userInfo, keyFile, clientKey, remoteAddr) {
+		if a.checkAuthorizedKeysFile(ctx, userInfo, keyFile, clientKey, remoteAddr) {
 			return true
 		}
 	}
@@ -243,7 +260,7 @@ func (a *AuthHandler) validatePublicKey(username string, clientKey ssh.PublicKey
 // checkAuthorizedKeysFile checks a single authorized_keys file for the given public key.
 // Uses crypto/ssh for all key parsing and comparison logic.
 // Also parses and validates key options like command restrictions.
-func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile string, clientKey ssh.PublicKey, remoteAddr string) bool {
+func (a *AuthHandler) checkAuthorizedKeysFile(ctx ssh.Context, userInfo *user.User, keyFile string, clientKey ssh.PublicKey, remoteAddr string) bool {
 	// Handle relative paths and ~ expansion like OpenSSH
 	var filePath string
 	if strings.HasPrefix(keyFile, "~/") || !filepath.IsAbs(keyFile) {
@@ -293,7 +310,7 @@ func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile strin
 			a.logger.Debugf("Matching public key found in %s:%d for user %s", filePath, lineNum, userInfo.Username)
 
 			// Validate key options if present
-			if options != nil && !a.validateKeyOptions(options, userInfo.Username, remoteAddr) {
+			if options != nil && !a.validateKeyOptions(ctx, options, userInfo.Username, remoteAddr) {
 				a.logger.Warnf("Public key found but options validation failed for user %s", userInfo.Username)
 				return false
 			}
@@ -310,11 +327,14 @@ func (a *AuthHandler) checkAuthorizedKeysFile(userInfo *user.User, keyFile strin
 }
 
 // validateKeyOptions validates authorized_keys options and applies restrictions.
+// Stores validated options in the session context for enforcement by session handlers.
 // Returns false if the key should be rejected due to option restrictions.
-func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username, remoteAddr string) bool {
-	// For now, just log the options - full enforcement would be done in session handlers
+func (a *AuthHandler) validateKeyOptions(ctx ssh.Context, options *AuthorizedKeyOptions, username, remoteAddr string) bool {
+	// Store options in context for session handlers to enforce
+	ctx.SetValue(ContextKeyAuthorizedKeyOptions, options)
+
 	if options.Command != "" {
-		a.logger.Debugf("Key has command restriction for user %s: %s", username, options.Command)
+		a.logger.Infof("Key has command restriction for user %s: %s", username, options.Command)
 	}
 
 	if len(options.From) > 0 {
@@ -335,8 +355,7 @@ func (a *AuthHandler) validateKeyOptions(options *AuthorizedKeyOptions, username
 		a.logger.Debugf("Key disables PTY for user %s", username)
 	}
 
-	// For basic implementation, accept all keys - restrictions would be enforced
-	// in session/channel handlers based on stored options
+	// Options are now stored in context and will be enforced by session handlers
 	return true
 }
 
