@@ -173,23 +173,10 @@ func (h *X11Handler) connectToLocalX11() (net.Conn, error) {
 		return nil, fmt.Errorf("DISPLAY environment variable not set")
 	}
 
-	// Parse display to extract display number (simplified parsing)
-	// Typical formats: :0, :1, localhost:10, etc.
-	var displayNum int
-	var host string
-
-	// Simple parsing - handle :N format and hostname:N format
-	if len(display) > 0 && display[0] == ':' {
-		// Unix socket format: :N
-		host = ""
-		if _, err := fmt.Sscanf(display, ":%d", &displayNum); err != nil {
-			return nil, fmt.Errorf("invalid DISPLAY format: %s", display)
-		}
-	} else {
-		// TCP format: hostname:N
-		if _, err := fmt.Sscanf(display, "%s:%d", &host, &displayNum); err != nil {
-			return nil, fmt.Errorf("invalid DISPLAY format: %s", display)
-		}
+	// Parse display using the correct ParseDisplayNumber function
+	host, displayNum, _, err := ParseDisplayNumber(display)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DISPLAY format %q: %w", display, err)
 	}
 
 	// Connect to X11 server

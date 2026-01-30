@@ -12,17 +12,20 @@ import (
 	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/handlers"
 	"github.com/go-i2p/go-sshd/pkg/logging"
+	"github.com/go-i2p/go-sshd/pkg/metrics"
 	"github.com/go-i2p/go-sshd/pkg/signals"
 )
 
 // Server wraps gliderlabs/ssh with OpenSSH-compatible configuration.
 // This is a thin wrapper that coordinates library functionality.
 type Server struct {
-	config        *config.Config
-	configFile    string // Store config file path for reload
-	ssh           *ssh.Server
-	logger        *logging.Logger
-	signalHandler *signals.Handler
+	config           *config.Config
+	configFile       string // Store config file path for reload
+	ssh              *ssh.Server
+	logger           *logging.Logger
+	signalHandler    *signals.Handler
+	metricsCollector *metrics.Collector
+	metricsServer    *metrics.Server
 }
 
 // New creates a new SSH server with the given configuration.
@@ -52,6 +55,13 @@ func NewWithConfigFile(cfg *config.Config, configFile string) (*Server, error) {
 		configFile:    configFile,
 		logger:        logger,
 		signalHandler: signalHandler,
+	}
+
+	// Initialize metrics if enabled
+	if cfg.MetricsEnabled {
+		server.metricsCollector = metrics.NewCollector(logger.GetLogrus())
+		server.metricsServer = metrics.NewServer(server.metricsCollector, cfg.MetricsAddress, logger)
+		logger.Infof("Metrics collection enabled, will listen on %s", cfg.MetricsAddress)
 	}
 
 	// Initialize SSH server with current configuration
@@ -196,6 +206,14 @@ func (s *Server) initializeSSHServer() error {
 func (s *Server) Start() error {
 	s.logger.Infof("Starting SSH server on port %d", s.config.Port)
 
+	// Start metrics server if enabled
+	if s.metricsServer != nil {
+		if err := s.metricsServer.Start(); err != nil {
+			return fmt.Errorf("failed to start metrics server: %w", err)
+		}
+		s.logger.Info("Metrics server started")
+	}
+
 	// Start signal handling in background
 	go s.handleSignals()
 
@@ -224,10 +242,20 @@ func (s *Server) Start() error {
 		if err := s.ssh.Close(); err != nil {
 			s.logger.Errorf("Error closing server: %v", err)
 		}
+		// Stop metrics server if running
+		if s.metricsServer != nil {
+			if err := s.metricsServer.Stop(); err != nil {
+				s.logger.Errorf("Error stopping metrics server: %v", err)
+			}
+		}
 		// Wait for server to actually stop
 		<-serverErr
 	case err := <-serverErr:
 		if err != nil {
+			// Also stop metrics server on error
+			if s.metricsServer != nil {
+				s.metricsServer.Stop()
+			}
 			return err
 		}
 	}
@@ -307,6 +335,15 @@ func (s *Server) Stop() error {
 	if s.ssh != nil {
 		if err := s.ssh.Close(); err != nil {
 			s.logger.Errorf("Error closing SSH server: %v", err)
+		}
+	}
+
+	// Stop metrics server if running
+	if s.metricsServer != nil {
+		if err := s.metricsServer.Stop(); err != nil {
+			s.logger.Errorf("Error stopping metrics server: %v", err)
+		} else {
+			s.logger.Info("Metrics server stopped")
 		}
 	}
 
