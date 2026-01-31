@@ -470,7 +470,30 @@ func detectKeyType(keyPath string) string {
 // to maintain full compatibility with OpenSSH config parsing.
 func Load(filename string) (*Config, error) {
 	// Set defaults matching OpenSSH behavior
-	cfg := &Config{
+	cfg := createDefaultConfig()
+
+	// Open and parse configuration file
+	file, err := openConfigFile(filename)
+	if err != nil {
+		// If config file doesn't exist, return defaults
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	// Parse configuration file line by line
+	if err := parseConfigFile(file, cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// createDefaultConfig creates a configuration with OpenSSH default values.
+func createDefaultConfig() *Config {
+	return &Config{
 		Port:                         22,
 		ListenAddress:                []string{"0.0.0.0"},
 		Protocol:                     []int{2},
@@ -495,18 +518,19 @@ func Load(filename string) (*Config, error) {
 		MetricsEnabled:               false,
 		MetricsAddress:               "127.0.0.1:9100", // Default Prometheus port for node_exporter compatibility
 	}
+}
 
-	// Open and parse configuration file
+// openConfigFile opens the configuration file for reading.
+func openConfigFile(filename string) (*os.File, error) {
 	file, err := os.Open(filename)
 	if err != nil {
-		// If config file doesn't exist, return defaults
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
-		return nil, fmt.Errorf("failed to open config file %q: %w", filename, err)
+		return nil, err
 	}
-	defer file.Close()
+	return file, nil
+}
 
+// parseConfigFile parses the configuration file line by line.
+func parseConfigFile(file *os.File, cfg *Config) error {
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 
@@ -520,36 +544,45 @@ func Load(filename string) (*Config, error) {
 		}
 
 		// Parse line using shlex for OpenSSH compatibility
-		tokens, err := shlex.Split(line)
-		if err != nil {
-			return nil, fmt.Errorf("config parse error at line %d: %w", lineNum, err)
-		}
-
-		if len(tokens) < 2 {
-			// Lines with just a directive and no arguments should cause an error
-			// when the directive is parsed, so continue to parseDirective
-			if len(tokens) == 1 {
-				if err := cfg.parseDirective(strings.ToLower(tokens[0]), []string{}); err != nil {
-					return nil, fmt.Errorf("config error at line %d: %w", lineNum, err)
-				}
-			}
-			continue
-		}
-
-		directive := strings.ToLower(tokens[0])
-		args := tokens[1:]
-
-		// Parse directives - minimal set for initial implementation
-		if err := cfg.parseDirective(directive, args); err != nil {
-			return nil, fmt.Errorf("config error at line %d: %w", lineNum, err)
+		if err := parseConfigLine(line, lineNum, cfg); err != nil {
+			return err
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	return cfg, nil
+	return nil
+}
+
+// parseConfigLine parses a single configuration line.
+func parseConfigLine(line string, lineNum int, cfg *Config) error {
+	tokens, err := shlex.Split(line)
+	if err != nil {
+		return fmt.Errorf("config parse error at line %d: %w", lineNum, err)
+	}
+
+	if len(tokens) < 2 {
+		// Lines with just a directive and no arguments should cause an error
+		// when the directive is parsed, so continue to parseDirective
+		if len(tokens) == 1 {
+			if err := cfg.parseDirective(strings.ToLower(tokens[0]), []string{}); err != nil {
+				return fmt.Errorf("config error at line %d: %w", lineNum, err)
+			}
+		}
+		return nil
+	}
+
+	directive := strings.ToLower(tokens[0])
+	args := tokens[1:]
+
+	// Parse directives
+	if err := cfg.parseDirective(directive, args); err != nil {
+		return fmt.Errorf("config error at line %d: %w", lineNum, err)
+	}
+
+	return nil
 }
 
 // parseDirective processes individual configuration directives.
