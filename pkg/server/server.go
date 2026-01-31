@@ -237,11 +237,8 @@ func (s *Server) Start() error {
 	s.logger.Infof("Starting SSH server on port %d", s.config.Port)
 
 	// Start metrics server if enabled
-	if s.metricsServer != nil {
-		if err := s.metricsServer.Start(); err != nil {
-			return fmt.Errorf("failed to start metrics server: %w", err)
-		}
-		s.logger.Info("Metrics server started")
+	if err := s.startMetricsServer(); err != nil {
+		return err
 	}
 
 	// Start signal handling in background
@@ -250,48 +247,82 @@ func (s *Server) Start() error {
 	// Start the gliderlabs/ssh server with context support
 	s.logger.Info("SSH server started successfully")
 
-	// Use context to control server lifecycle
+	// Wait for shutdown or error
+	return s.runServerLoop()
+}
+
+// startMetricsServer starts the metrics server if configured.
+func (s *Server) startMetricsServer() error {
+	if s.metricsServer == nil {
+		return nil
+	}
+
+	if err := s.metricsServer.Start(); err != nil {
+		return fmt.Errorf("failed to start metrics server: %w", err)
+	}
+	s.logger.Info("Metrics server started")
+	return nil
+}
+
+// runServerLoop runs the SSH server and waits for shutdown signal or error.
+func (s *Server) runServerLoop() error {
 	ctx := s.signalHandler.Context()
 
-	// Start server in a goroutine so we can handle context cancellation
+	// Start server in a goroutine
 	serverErr := make(chan error, 1)
-	go func() {
-		err := s.ssh.ListenAndServe()
-		if err != nil && err != ssh.ErrServerClosed {
-			serverErr <- fmt.Errorf("server error: %w", err)
-		} else {
-			serverErr <- nil
-		}
-	}()
+	go s.runSSHServer(serverErr)
 
 	// Wait for shutdown signal or server error
 	select {
 	case <-ctx.Done():
-		s.logger.Info("Received shutdown signal, stopping server...")
-		// Gracefully close the server
-		if err := s.ssh.Close(); err != nil {
-			s.logger.Errorf("Error closing server: %v", err)
-		}
-		// Stop metrics server if running
-		if s.metricsServer != nil {
-			if err := s.metricsServer.Stop(); err != nil {
-				s.logger.Errorf("Error stopping metrics server: %v", err)
-			}
-		}
-		// Wait for server to actually stop
-		<-serverErr
+		return s.handleShutdown(serverErr)
 	case err := <-serverErr:
 		if err != nil {
-			// Also stop metrics server on error
-			if s.metricsServer != nil {
-				s.metricsServer.Stop()
-			}
+			s.stopMetricsServer()
 			return err
 		}
 	}
 
 	s.logger.Info("SSH server stopped")
 	return nil
+}
+
+// runSSHServer starts the SSH listener and handles errors.
+func (s *Server) runSSHServer(serverErr chan<- error) {
+	err := s.ssh.ListenAndServe()
+	if err != nil && err != ssh.ErrServerClosed {
+		serverErr <- fmt.Errorf("server error: %w", err)
+	} else {
+		serverErr <- nil
+	}
+}
+
+// handleShutdown gracefully stops the server and metrics server.
+func (s *Server) handleShutdown(serverErr <-chan error) error {
+	s.logger.Info("Received shutdown signal, stopping server...")
+
+	// Gracefully close the server
+	if err := s.ssh.Close(); err != nil {
+		s.logger.Errorf("Error closing server: %v", err)
+	}
+
+	// Stop metrics server if running
+	s.stopMetricsServer()
+
+	// Wait for server to actually stop
+	<-serverErr
+
+	s.logger.Info("SSH server stopped")
+	return nil
+}
+
+// stopMetricsServer stops the metrics server if running.
+func (s *Server) stopMetricsServer() {
+	if s.metricsServer != nil {
+		if err := s.metricsServer.Stop(); err != nil {
+			s.logger.Errorf("Error stopping metrics server: %v", err)
+		}
+	}
 }
 
 // handleSignals runs in a background goroutine to handle configuration reload signals.
