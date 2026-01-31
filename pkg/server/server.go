@@ -81,14 +81,30 @@ func (s *Server) initializeSSHServer() error {
 		Addr: fmt.Sprintf(":%d", s.config.Port),
 	}
 
-	// Configure host keys using the new HostKeyManager
+	// Configure all server components
+	if err := s.configureHostKeys(sshServer); err != nil {
+		return err
+	}
+
+	s.configureAuthentication(sshServer)
+	s.configureSessionHandlers(sshServer)
+	s.configurePortForwarding(sshServer)
+	s.configureAgentForwarding(sshServer)
+	s.configureX11Forwarding(sshServer)
+
+	s.ssh = sshServer
+	return nil
+}
+
+// configureHostKeys loads or generates host keys and adds them to the SSH server.
+func (s *Server) configureHostKeys(sshServer *ssh.Server) error {
 	hostKeyManager := crypto.NewHostKeyManager(s.config.HostKey)
 	signers, err := hostKeyManager.LoadOrGenerateKeys()
 	if err != nil {
 		return fmt.Errorf("failed to load or generate host keys: %w", err)
 	}
 
-	// Add all signers to the SSH server
+	validSigners := 0
 	for i, signer := range signers {
 		if err := crypto.ValidateHostKey(signer); err != nil {
 			s.logger.Errorf("Invalid host key %d: %v", i, err)
@@ -99,21 +115,29 @@ func (s *Server) initializeSSHServer() error {
 		fingerprint := crypto.GetKeyFingerprint(signer.PublicKey())
 		keyType := crypto.GetKeyType(signer.PublicKey())
 		s.logger.Infof("Loaded host key: %s %s", keyType, fingerprint)
+		validSigners++
 	}
 
-	if len(signers) == 0 {
+	if validSigners == 0 {
 		return fmt.Errorf("no valid host keys loaded")
 	}
 
-	// Configure authentication handlers using the new AuthHandler
+	return nil
+}
+
+// configureAuthentication sets up password, public key, and keyboard-interactive authentication handlers.
+func (s *Server) configureAuthentication(sshServer *ssh.Server) {
 	if s.config.PasswordAuthentication || s.config.PubkeyAuthentication || s.config.KbdInteractiveAuthentication {
 		authHandler := handlers.NewAuthHandler(s.config, s.logger.GetLogrus())
 		sshServer.PasswordHandler = authHandler.CreatePasswordHandler()
 		sshServer.PublicKeyHandler = authHandler.CreatePublicKeyHandler()
 		sshServer.KeyboardInteractiveHandler = authHandler.CreateKeyboardInteractiveHandler()
 	}
+}
 
-	// Configure session handler using the new ShellHandler
+// configureSessionHandlers sets up shell session and SFTP subsystem handlers.
+func (s *Server) configureSessionHandlers(sshServer *ssh.Server) {
+	// Configure session handler
 	shellHandler := handlers.NewShellHandler(s.logger.GetLogrus())
 	sshServer.Handler = shellHandler.CreateSessionHandler()
 
@@ -122,83 +146,89 @@ func (s *Server) initializeSSHServer() error {
 	sshServer.SubsystemHandlers = map[string]ssh.SubsystemHandler{
 		"sftp": sftpHandler.CreateSubsystemHandler(),
 	}
+}
 
-	// Configure port forwarding handlers if TCP forwarding is enabled
-	if s.config.AllowTcpForwarding {
-		forwardingHandler := handlers.NewForwardingHandler(s.config, s.logger.GetLogrus())
-
-		// Set local port forwarding callback
-		sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()
-
-		// Set reverse port forwarding callback
-		sshServer.ReversePortForwardingCallback = forwardingHandler.CreateReversePortForwardHandler()
-
-		// Add direct-tcpip channel handler for local forwarding
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
-
-		// Add request handlers for remote forwarding
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		tcpHandler := forwardingHandler.GetTCPHandler()
-		sshServer.RequestHandlers["tcpip-forward"] = tcpHandler.HandleSSHRequest
-		sshServer.RequestHandlers["cancel-tcpip-forward"] = tcpHandler.HandleSSHRequest
-
-		s.logger.Info("Port forwarding enabled: local, remote, and direct TCP/IP forwarding")
-	} else {
+// configurePortForwarding sets up local, remote, and direct TCP/IP port forwarding handlers.
+func (s *Server) configurePortForwarding(sshServer *ssh.Server) {
+	if !s.config.AllowTcpForwarding {
 		s.logger.Info("Port forwarding disabled by configuration")
+		return
 	}
 
-	// Configure agent forwarding handlers if agent forwarding is enabled
-	if s.config.AllowAgentForwarding {
-		agentHandler := handlers.NewAgentHandler(s.config, s.logger.GetLogrus())
+	forwardingHandler := handlers.NewForwardingHandler(s.config, s.logger.GetLogrus())
 
-		// Add agent forwarding channel handler
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["auth-agent@openssh.com"] = agentHandler.CreateAgentForwardingHandler()
+	// Set port forwarding callbacks
+	sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()
+	sshServer.ReversePortForwardingCallback = forwardingHandler.CreateReversePortForwardHandler()
 
-		// Add agent forwarding request handler
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		sshServer.RequestHandlers["auth-agent-req@openssh.com"] = agentHandler.CreateAgentRequestHandler()
+	// Initialize channel and request handlers if needed
+	if sshServer.ChannelHandlers == nil {
+		sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+	}
+	if sshServer.RequestHandlers == nil {
+		sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+	}
 
-		s.logger.Info("SSH agent forwarding enabled")
-	} else {
+	// Add direct-tcpip channel handler
+	sshServer.ChannelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
+
+	// Add request handlers for remote forwarding
+	tcpHandler := forwardingHandler.GetTCPHandler()
+	sshServer.RequestHandlers["tcpip-forward"] = tcpHandler.HandleSSHRequest
+	sshServer.RequestHandlers["cancel-tcpip-forward"] = tcpHandler.HandleSSHRequest
+
+	s.logger.Info("Port forwarding enabled: local, remote, and direct TCP/IP forwarding")
+}
+
+// configureAgentForwarding sets up SSH agent forwarding handlers.
+func (s *Server) configureAgentForwarding(sshServer *ssh.Server) {
+	if !s.config.AllowAgentForwarding {
 		s.logger.Info("SSH agent forwarding disabled by configuration")
+		return
 	}
 
-	// Configure X11 forwarding handlers if X11 forwarding is enabled
-	if s.config.X11Forwarding {
-		x11Handler := handlers.NewX11Handler(s.config, s.logger.GetLogrus())
+	agentHandler := handlers.NewAgentHandler(s.config, s.logger.GetLogrus())
 
-		// Add X11 forwarding channel handler
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["x11"] = x11Handler.CreateX11ChannelHandler()
+	// Initialize handlers if needed
+	if sshServer.ChannelHandlers == nil {
+		sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+	}
+	if sshServer.RequestHandlers == nil {
+		sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+	}
 
-		// Add X11 forwarding request handler
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		sshServer.RequestHandlers["x11-req"] = x11Handler.CreateX11RequestHandler()
+	// Add agent forwarding handlers
+	sshServer.ChannelHandlers["auth-agent@openssh.com"] = agentHandler.CreateAgentForwardingHandler()
+	sshServer.RequestHandlers["auth-agent-req@openssh.com"] = agentHandler.CreateAgentRequestHandler()
 
-		s.logger.WithFields(map[string]interface{}{
-			"displayOffset": s.config.X11DisplayOffset,
-			"useLocalhost":  s.config.X11UseLocalhost,
-		}).Info("X11 forwarding enabled")
-	} else {
+	s.logger.Info("SSH agent forwarding enabled")
+}
+
+// configureX11Forwarding sets up X11 display forwarding handlers.
+func (s *Server) configureX11Forwarding(sshServer *ssh.Server) {
+	if !s.config.X11Forwarding {
 		s.logger.Info("X11 forwarding disabled by configuration")
+		return
 	}
 
-	s.ssh = sshServer
-	return nil
+	x11Handler := handlers.NewX11Handler(s.config, s.logger.GetLogrus())
+
+	// Initialize handlers if needed
+	if sshServer.ChannelHandlers == nil {
+		sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+	}
+	if sshServer.RequestHandlers == nil {
+		sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+	}
+
+	// Add X11 forwarding handlers
+	sshServer.ChannelHandlers["x11"] = x11Handler.CreateX11ChannelHandler()
+	sshServer.RequestHandlers["x11-req"] = x11Handler.CreateX11RequestHandler()
+
+	s.logger.WithFields(map[string]interface{}{
+		"displayOffset": s.config.X11DisplayOffset,
+		"useLocalhost":  s.config.X11UseLocalhost,
+	}).Info("X11 forwarding enabled")
 }
 
 // Start starts the SSH server in foreground mode.
