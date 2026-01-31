@@ -138,57 +138,9 @@ func validateAndReportConfig(cfg *config.Config) error {
 	result := cfg.Validate()
 
 	// Print detailed validation report
-	if result.Valid {
-		fmt.Println("Configuration file is valid")
-	} else {
-		fmt.Printf("Configuration validation failed with %d error(s)\n", result.ErrorCount)
-	}
-
-	// Report issues grouped by severity
-	if result.ErrorCount > 0 {
-		fmt.Printf("\nERRORS (%d):\n", result.ErrorCount)
-		for _, issue := range result.Issues {
-			if issue.Level == config.ValidationError {
-				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
-				if issue.Suggestion != "" {
-					fmt.Printf(" - %s", issue.Suggestion)
-				}
-				fmt.Println()
-			}
-		}
-	}
-
-	if result.WarnCount > 0 {
-		fmt.Printf("\nWARNINGS (%d):\n", result.WarnCount)
-		for _, issue := range result.Issues {
-			if issue.Level == config.ValidationWarning {
-				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
-				if issue.Suggestion != "" {
-					fmt.Printf(" - %s", issue.Suggestion)
-				}
-				fmt.Println()
-			}
-		}
-	}
-
-	if result.InfoCount > 0 {
-		fmt.Printf("\nINFORMATION (%d):\n", result.InfoCount)
-		for _, issue := range result.Issues {
-			if issue.Level == config.ValidationInfo {
-				fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
-				if issue.Suggestion != "" {
-					fmt.Printf(" - %s", issue.Suggestion)
-				}
-				fmt.Println()
-			}
-		}
-	}
-
-	// Summary
-	if result.ErrorCount > 0 || result.WarnCount > 0 || result.InfoCount > 0 {
-		fmt.Printf("\nValidation Summary: %d error(s), %d warning(s), %d info message(s)\n",
-			result.ErrorCount, result.WarnCount, result.InfoCount)
-	}
+	printValidationHeader(result)
+	printIssuesByLevel(result)
+	printValidationSummary(result)
 
 	// Exit with error code if configuration is invalid
 	if !result.Valid {
@@ -196,6 +148,75 @@ func validateAndReportConfig(cfg *config.Config) error {
 	}
 
 	return nil
+}
+
+// printValidationHeader prints the validation status header.
+func printValidationHeader(result *config.ValidationResult) {
+	if result.Valid {
+		fmt.Println("Configuration file is valid")
+	} else {
+		fmt.Printf("Configuration validation failed with %d error(s)\n", result.ErrorCount)
+	}
+}
+
+// printIssuesByLevel prints all validation issues grouped by severity level.
+func printIssuesByLevel(result *config.ValidationResult) {
+	printErrorIssues(result)
+	printWarningIssues(result)
+	printInfoIssues(result)
+}
+
+// printErrorIssues prints all error-level validation issues.
+func printErrorIssues(result *config.ValidationResult) {
+	if result.ErrorCount > 0 {
+		fmt.Printf("\nERRORS (%d):\n", result.ErrorCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationError {
+				printIssue(issue)
+			}
+		}
+	}
+}
+
+// printWarningIssues prints all warning-level validation issues.
+func printWarningIssues(result *config.ValidationResult) {
+	if result.WarnCount > 0 {
+		fmt.Printf("\nWARNINGS (%d):\n", result.WarnCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationWarning {
+				printIssue(issue)
+			}
+		}
+	}
+}
+
+// printInfoIssues prints all informational validation issues.
+func printInfoIssues(result *config.ValidationResult) {
+	if result.InfoCount > 0 {
+		fmt.Printf("\nINFORMATION (%d):\n", result.InfoCount)
+		for _, issue := range result.Issues {
+			if issue.Level == config.ValidationInfo {
+				printIssue(issue)
+			}
+		}
+	}
+}
+
+// printIssue formats and prints a single validation issue.
+func printIssue(issue config.ValidationIssue) {
+	fmt.Printf("  [%s] %s", issue.Directive, issue.Message)
+	if issue.Suggestion != "" {
+		fmt.Printf(" - %s", issue.Suggestion)
+	}
+	fmt.Println()
+}
+
+// printValidationSummary prints the final validation summary.
+func printValidationSummary(result *config.ValidationResult) {
+	if result.ErrorCount > 0 || result.WarnCount > 0 || result.InfoCount > 0 {
+		fmt.Printf("\nValidation Summary: %d error(s), %d warning(s), %d info message(s)\n",
+			result.ErrorCount, result.WarnCount, result.InfoCount)
+	}
 }
 
 // runInetdMode runs the SSH server in inetd/socket activation mode.

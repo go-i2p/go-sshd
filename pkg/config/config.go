@@ -554,198 +554,384 @@ func Load(filename string) (*Config, error) {
 
 // parseDirective processes individual configuration directives.
 // This method handles the core OpenSSH directives needed for basic operation.
+// parseDirective parses and applies a single configuration directive.
+// This function delegates to category-specific handlers to maintain low complexity.
 func (c *Config) parseDirective(directive string, args []string) error {
 	switch directive {
-	case "port":
-		if len(args) != 1 {
-			return fmt.Errorf("port requires exactly one argument")
-		}
-		port, err := strconv.Atoi(args[0])
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("invalid port number: %s", args[0])
-		}
-		c.Port = port
-
-	case "listenaddress":
-		if len(args) != 1 {
-			return fmt.Errorf("listenaddress requires exactly one argument")
-		}
-		c.ListenAddress = append(c.ListenAddress, args[0])
-
-	case "hostkey":
-		if len(args) != 1 {
-			return fmt.Errorf("hostkey requires exactly one argument")
-		}
-		// If this is the first HostKey directive, clear the defaults
-		if len(c.HostKey) == 3 &&
-			c.HostKey[0] == "/etc/ssh/ssh_host_rsa_key" &&
-			c.HostKey[1] == "/etc/ssh/ssh_host_ecdsa_key" &&
-			c.HostKey[2] == "/etc/ssh/ssh_host_ed25519_key" {
-			c.HostKey = []string{}
-		}
-		c.HostKey = append(c.HostKey, args[0])
-
-	case "passwordauthentication":
-		if len(args) != 1 {
-			return fmt.Errorf("passwordauthentication requires exactly one argument")
-		}
-		c.PasswordAuthentication = parseBool(args[0])
-
-	case "pubkeyauthentication":
-		if len(args) != 1 {
-			return fmt.Errorf("pubkeyauthentication requires exactly one argument")
-		}
-		c.PubkeyAuthentication = parseBool(args[0])
-
-	case "kbdinteractiveauthentication":
-		if len(args) != 1 {
-			return fmt.Errorf("kbdinteractiveauthentication requires exactly one argument")
-		}
-		c.KbdInteractiveAuthentication = parseBool(args[0])
-
+	case "port", "listenaddress", "hostkey":
+		return c.parseNetworkDirective(directive, args)
+	case "passwordauthentication", "pubkeyauthentication", "kbdinteractiveauthentication",
+		"trustedusercakeys", "revokedkeys", "authorizedkeysfile":
+		return c.parseAuthenticationDirective(directive, args)
+	case "permitrootlogin", "allowusers", "denyusers", "allowgroups", "denygroups":
+		return c.parseAuthorizationDirective(directive, args)
+	case "allowagentforwarding", "allowtcpforwarding", "x11forwarding",
+		"x11displayoffset", "x11uselocalhost", "gatewayports":
+		return c.parseForwardingDirective(directive, args)
+	case "loglevel", "syslogfacility", "logfile":
+		return c.parseLoggingDirective(directive, args)
+	case "metricsenabled", "metricsaddress":
+		return c.parseMetricsDirective(directive, args)
 	case "subsystem":
-		if len(args) != 2 {
-			return fmt.Errorf("subsystem requires exactly two arguments")
-		}
-		c.Subsystem[args[0]] = args[1]
-
-	case "allowagentforwarding":
-		if len(args) != 1 {
-			return fmt.Errorf("allowagentforwarding requires exactly one argument")
-		}
-		c.AllowAgentForwarding = parseBool(args[0])
-
-	case "allowtcpforwarding":
-		if len(args) != 1 {
-			return fmt.Errorf("allowtcpforwarding requires exactly one argument")
-		}
-		c.AllowTcpForwarding = parseBool(args[0])
-
-	case "x11forwarding":
-		if len(args) != 1 {
-			return fmt.Errorf("x11forwarding requires exactly one argument")
-		}
-		c.X11Forwarding = parseBool(args[0])
-
-	case "x11displayoffset":
-		if len(args) != 1 {
-			return fmt.Errorf("x11displayoffset requires exactly one argument")
-		}
-		offset, err := strconv.Atoi(args[0])
-		if err != nil || offset < 0 {
-			return fmt.Errorf("invalid x11displayoffset value: %s", args[0])
-		}
-		c.X11DisplayOffset = offset
-
-	case "x11uselocalhost":
-		if len(args) != 1 {
-			return fmt.Errorf("x11uselocalhost requires exactly one argument")
-		}
-		c.X11UseLocalhost = parseBool(args[0])
-
-	case "gatewayports":
-		if len(args) != 1 {
-			return fmt.Errorf("gatewayports requires exactly one argument")
-		}
-		c.GatewayPorts = parseBool(args[0])
-
-	case "permitrootlogin":
-		if len(args) != 1 {
-			return fmt.Errorf("permitrootlogin requires exactly one argument")
-		}
-		value := strings.ToLower(args[0])
-		if value != "yes" && value != "no" && value != "prohibit-password" && value != "forced-commands-only" {
-			return fmt.Errorf("invalid permitrootlogin value: %s", args[0])
-		}
-		c.PermitRootLogin = value
-
-	case "allowusers":
-		if len(args) == 0 {
-			return fmt.Errorf("allowusers requires at least one argument")
-		}
-		c.AllowUsers = append(c.AllowUsers, args...)
-
-	case "denyusers":
-		if len(args) == 0 {
-			return fmt.Errorf("denyusers requires at least one argument")
-		}
-		c.DenyUsers = append(c.DenyUsers, args...)
-
-	case "allowgroups":
-		if len(args) == 0 {
-			return fmt.Errorf("allowgroups requires at least one argument")
-		}
-		c.AllowGroups = append(c.AllowGroups, args...)
-
-	case "denygroups":
-		if len(args) == 0 {
-			return fmt.Errorf("denygroups requires at least one argument")
-		}
-		c.DenyGroups = append(c.DenyGroups, args...)
-
-	case "authorizedkeysfile":
-		if len(args) == 0 {
-			return fmt.Errorf("authorizedkeysfile requires at least one argument")
-		}
-		c.AuthorizedKeysFile = args
-
-	case "trustedusercakeys":
-		if len(args) != 1 {
-			return fmt.Errorf("trustedusercakeys requires exactly one argument")
-		}
-		c.TrustedUserCAKeys = append(c.TrustedUserCAKeys, args[0])
-
-	case "revokedkeys":
-		if len(args) != 1 {
-			return fmt.Errorf("revokedkeys requires exactly one argument")
-		}
-		c.RevokedKeys = append(c.RevokedKeys, args[0])
-
-	case "loglevel":
-		if len(args) != 1 {
-			return fmt.Errorf("loglevel requires exactly one argument")
-		}
-		level := strings.ToUpper(args[0])
-		if !isValidLogLevel(level) {
-			return fmt.Errorf("invalid log level: %s", args[0])
-		}
-		c.LogLevel = level
-
-	case "syslogfacility":
-		if len(args) != 1 {
-			return fmt.Errorf("syslogfacility requires exactly one argument")
-		}
-		facility := strings.ToUpper(args[0])
-		if !isValidSyslogFacility(facility) {
-			return fmt.Errorf("invalid syslog facility: %s", args[0])
-		}
-		c.SyslogFacility = facility
-
-	case "logfile":
-		if len(args) != 1 {
-			return fmt.Errorf("logfile requires exactly one argument")
-		}
-		c.LogFile = args[0]
-
-	case "metricsenabled":
-		if len(args) != 1 {
-			return fmt.Errorf("metricsenabled requires exactly one argument")
-		}
-		c.MetricsEnabled = parseBool(args[0])
-
-	case "metricsaddress":
-		if len(args) != 1 {
-			return fmt.Errorf("metricsaddress requires exactly one argument")
-		}
-		// Validate address format (host:port)
-		if _, _, err := net.SplitHostPort(args[0]); err != nil {
-			return fmt.Errorf("invalid metricsaddress format: %s (expected host:port)", args[0])
-		}
-		c.MetricsAddress = args[0]
-
-		// Add more directives as needed - keeping minimal for now
+		return c.parseSubsystemDirective(args)
 	}
+	return nil
+}
 
+// parseNetworkDirective handles network-related configuration directives.
+func (c *Config) parseNetworkDirective(directive string, args []string) error {
+	switch directive {
+	case "port":
+		return c.parsePortDirective(args)
+	case "listenaddress":
+		return c.parseListenAddressDirective(args)
+	case "hostkey":
+		return c.parseHostKeyDirective(args)
+	}
+	return nil
+}
+
+// parsePortDirective parses the Port directive.
+func (c *Config) parsePortDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("port requires exactly one argument")
+	}
+	port, err := strconv.Atoi(args[0])
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port number: %s", args[0])
+	}
+	c.Port = port
+	return nil
+}
+
+// parseListenAddressDirective parses the ListenAddress directive.
+func (c *Config) parseListenAddressDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("listenaddress requires exactly one argument")
+	}
+	c.ListenAddress = append(c.ListenAddress, args[0])
+	return nil
+}
+
+// parseHostKeyDirective parses the HostKey directive.
+func (c *Config) parseHostKeyDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("hostkey requires exactly one argument")
+	}
+	// If this is the first HostKey directive, clear the defaults
+	if len(c.HostKey) == 3 &&
+		c.HostKey[0] == "/etc/ssh/ssh_host_rsa_key" &&
+		c.HostKey[1] == "/etc/ssh/ssh_host_ecdsa_key" &&
+		c.HostKey[2] == "/etc/ssh/ssh_host_ed25519_key" {
+		c.HostKey = []string{}
+	}
+	c.HostKey = append(c.HostKey, args[0])
+	return nil
+}
+
+// parseAuthenticationDirective handles authentication-related configuration directives.
+func (c *Config) parseAuthenticationDirective(directive string, args []string) error {
+	switch directive {
+	case "passwordauthentication":
+		return c.parsePasswordAuthDirective(args)
+	case "pubkeyauthentication":
+		return c.parsePubkeyAuthDirective(args)
+	case "kbdinteractiveauthentication":
+		return c.parseKbdInteractiveAuthDirective(args)
+	case "authorizedkeysfile":
+		return c.parseAuthorizedKeysFileDirective(args)
+	case "trustedusercakeys":
+		return c.parseTrustedUserCAKeysDirective(args)
+	case "revokedkeys":
+		return c.parseRevokedKeysDirective(args)
+	}
+	return nil
+}
+
+// parsePasswordAuthDirective parses the PasswordAuthentication directive.
+func (c *Config) parsePasswordAuthDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("passwordauthentication requires exactly one argument")
+	}
+	c.PasswordAuthentication = parseBool(args[0])
+	return nil
+}
+
+// parsePubkeyAuthDirective parses the PubkeyAuthentication directive.
+func (c *Config) parsePubkeyAuthDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("pubkeyauthentication requires exactly one argument")
+	}
+	c.PubkeyAuthentication = parseBool(args[0])
+	return nil
+}
+
+// parseKbdInteractiveAuthDirective parses the KbdInteractiveAuthentication directive.
+func (c *Config) parseKbdInteractiveAuthDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("kbdinteractiveauthentication requires exactly one argument")
+	}
+	c.KbdInteractiveAuthentication = parseBool(args[0])
+	return nil
+}
+
+// parseAuthorizedKeysFileDirective parses the AuthorizedKeysFile directive.
+func (c *Config) parseAuthorizedKeysFileDirective(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("authorizedkeysfile requires at least one argument")
+	}
+	c.AuthorizedKeysFile = args
+	return nil
+}
+
+// parseTrustedUserCAKeysDirective parses the TrustedUserCAKeys directive.
+func (c *Config) parseTrustedUserCAKeysDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("trustedusercakeys requires exactly one argument")
+	}
+	c.TrustedUserCAKeys = append(c.TrustedUserCAKeys, args[0])
+	return nil
+}
+
+// parseRevokedKeysDirective parses the RevokedKeys directive.
+func (c *Config) parseRevokedKeysDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("revokedkeys requires exactly one argument")
+	}
+	c.RevokedKeys = append(c.RevokedKeys, args[0])
+	return nil
+}
+
+// parseAuthorizationDirective handles authorization-related configuration directives.
+func (c *Config) parseAuthorizationDirective(directive string, args []string) error {
+	switch directive {
+	case "permitrootlogin":
+		return c.parsePermitRootLoginDirective(args)
+	case "allowusers":
+		return c.parseAllowUsersDirective(args)
+	case "denyusers":
+		return c.parseDenyUsersDirective(args)
+	case "allowgroups":
+		return c.parseAllowGroupsDirective(args)
+	case "denygroups":
+		return c.parseDenyGroupsDirective(args)
+	}
+	return nil
+}
+
+// parsePermitRootLoginDirective parses the PermitRootLogin directive.
+func (c *Config) parsePermitRootLoginDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("permitrootlogin requires exactly one argument")
+	}
+	value := strings.ToLower(args[0])
+	if value != "yes" && value != "no" && value != "prohibit-password" && value != "forced-commands-only" {
+		return fmt.Errorf("invalid permitrootlogin value: %s", args[0])
+	}
+	c.PermitRootLogin = value
+	return nil
+}
+
+// parseAllowUsersDirective parses the AllowUsers directive.
+func (c *Config) parseAllowUsersDirective(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("allowusers requires at least one argument")
+	}
+	c.AllowUsers = append(c.AllowUsers, args...)
+	return nil
+}
+
+// parseDenyUsersDirective parses the DenyUsers directive.
+func (c *Config) parseDenyUsersDirective(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("denyusers requires at least one argument")
+	}
+	c.DenyUsers = append(c.DenyUsers, args...)
+	return nil
+}
+
+// parseAllowGroupsDirective parses the AllowGroups directive.
+func (c *Config) parseAllowGroupsDirective(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("allowgroups requires at least one argument")
+	}
+	c.AllowGroups = append(c.AllowGroups, args...)
+	return nil
+}
+
+// parseDenyGroupsDirective parses the DenyGroups directive.
+func (c *Config) parseDenyGroupsDirective(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("denygroups requires at least one argument")
+	}
+	c.DenyGroups = append(c.DenyGroups, args...)
+	return nil
+}
+
+// parseForwardingDirective handles forwarding-related configuration directives.
+func (c *Config) parseForwardingDirective(directive string, args []string) error {
+	switch directive {
+	case "allowagentforwarding":
+		return c.parseAllowAgentForwardingDirective(args)
+	case "allowtcpforwarding":
+		return c.parseAllowTcpForwardingDirective(args)
+	case "x11forwarding":
+		return c.parseX11ForwardingDirective(args)
+	case "x11displayoffset":
+		return c.parseX11DisplayOffsetDirective(args)
+	case "x11uselocalhost":
+		return c.parseX11UseLocalhostDirective(args)
+	case "gatewayports":
+		return c.parseGatewayPortsDirective(args)
+	}
+	return nil
+}
+
+// parseAllowAgentForwardingDirective parses the AllowAgentForwarding directive.
+func (c *Config) parseAllowAgentForwardingDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("allowagentforwarding requires exactly one argument")
+	}
+	c.AllowAgentForwarding = parseBool(args[0])
+	return nil
+}
+
+// parseAllowTcpForwardingDirective parses the AllowTcpForwarding directive.
+func (c *Config) parseAllowTcpForwardingDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("allowtcpforwarding requires exactly one argument")
+	}
+	c.AllowTcpForwarding = parseBool(args[0])
+	return nil
+}
+
+// parseX11ForwardingDirective parses the X11Forwarding directive.
+func (c *Config) parseX11ForwardingDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("x11forwarding requires exactly one argument")
+	}
+	c.X11Forwarding = parseBool(args[0])
+	return nil
+}
+
+// parseX11DisplayOffsetDirective parses the X11DisplayOffset directive.
+func (c *Config) parseX11DisplayOffsetDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("x11displayoffset requires exactly one argument")
+	}
+	offset, err := strconv.Atoi(args[0])
+	if err != nil || offset < 0 {
+		return fmt.Errorf("invalid x11displayoffset value: %s", args[0])
+	}
+	c.X11DisplayOffset = offset
+	return nil
+}
+
+// parseX11UseLocalhostDirective parses the X11UseLocalhost directive.
+func (c *Config) parseX11UseLocalhostDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("x11uselocalhost requires exactly one argument")
+	}
+	c.X11UseLocalhost = parseBool(args[0])
+	return nil
+}
+
+// parseGatewayPortsDirective parses the GatewayPorts directive.
+func (c *Config) parseGatewayPortsDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("gatewayports requires exactly one argument")
+	}
+	c.GatewayPorts = parseBool(args[0])
+	return nil
+}
+
+// parseLoggingDirective handles logging-related configuration directives.
+func (c *Config) parseLoggingDirective(directive string, args []string) error {
+	switch directive {
+	case "loglevel":
+		return c.parseLogLevelDirective(args)
+	case "syslogfacility":
+		return c.parseSyslogFacilityDirective(args)
+	case "logfile":
+		return c.parseLogFileDirective(args)
+	}
+	return nil
+}
+
+// parseLogLevelDirective parses the LogLevel directive.
+func (c *Config) parseLogLevelDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("loglevel requires exactly one argument")
+	}
+	level := strings.ToUpper(args[0])
+	if !isValidLogLevel(level) {
+		return fmt.Errorf("invalid log level: %s", args[0])
+	}
+	c.LogLevel = level
+	return nil
+}
+
+// parseSyslogFacilityDirective parses the SyslogFacility directive.
+func (c *Config) parseSyslogFacilityDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("syslogfacility requires exactly one argument")
+	}
+	facility := strings.ToUpper(args[0])
+	if !isValidSyslogFacility(facility) {
+		return fmt.Errorf("invalid syslog facility: %s", args[0])
+	}
+	c.SyslogFacility = facility
+	return nil
+}
+
+// parseLogFileDirective parses the LogFile directive.
+func (c *Config) parseLogFileDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("logfile requires exactly one argument")
+	}
+	c.LogFile = args[0]
+	return nil
+}
+
+// parseMetricsDirective handles metrics-related configuration directives.
+func (c *Config) parseMetricsDirective(directive string, args []string) error {
+	switch directive {
+	case "metricsenabled":
+		return c.parseMetricsEnabledDirective(args)
+	case "metricsaddress":
+		return c.parseMetricsAddressDirective(args)
+	}
+	return nil
+}
+
+// parseMetricsEnabledDirective parses the MetricsEnabled directive.
+func (c *Config) parseMetricsEnabledDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("metricsenabled requires exactly one argument")
+	}
+	c.MetricsEnabled = parseBool(args[0])
+	return nil
+}
+
+// parseMetricsAddressDirective parses the MetricsAddress directive.
+func (c *Config) parseMetricsAddressDirective(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("metricsaddress requires exactly one argument")
+	}
+	// Validate address format (host:port)
+	if _, _, err := net.SplitHostPort(args[0]); err != nil {
+		return fmt.Errorf("invalid metricsaddress format: %s (expected host:port)", args[0])
+	}
+	c.MetricsAddress = args[0]
+	return nil
+}
+
+// parseSubsystemDirective parses the Subsystem directive.
+func (c *Config) parseSubsystemDirective(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("subsystem requires exactly two arguments")
+	}
+	c.Subsystem[args[0]] = args[1]
 	return nil
 }
 
