@@ -144,45 +144,63 @@ func (ua *UserAuthorizer) IsRootForcedCommandsRequired(username string) bool {
 // Follows OpenSSH precedence: DenyGroups is checked first, then AllowGroups.
 // Uses os/user package to look up the user's group memberships from the system.
 func (ua *UserAuthorizer) IsGroupAllowed(username string) bool {
-	// Get user's group memberships from the system
 	userGroups, err := ua.getUserGroups(username)
 	if err != nil {
-		ua.logger.Warnf("Failed to get groups for user %s: %v", username, err)
-		// If we can't get groups and groups are configured, deny for safety
-		if len(ua.config.AllowGroups) > 0 || len(ua.config.DenyGroups) > 0 {
-			ua.logger.Infof("Denying user %s due to group lookup failure with group restrictions configured", username)
-			return false
-		}
-		// No group restrictions configured, allow
-		return true
+		return ua.handleGroupLookupError(username, err)
 	}
 
-	// Check DenyGroups first (takes precedence)
+	if ua.isUserInDenyGroups(username, userGroups) {
+		return false
+	}
+
+	return ua.isUserInAllowGroups(username, userGroups)
+}
+
+// handleGroupLookupError handles errors during group lookup.
+func (ua *UserAuthorizer) handleGroupLookupError(username string, err error) bool {
+	ua.logger.Warnf("Failed to get groups for user %s: %v", username, err)
+
+	// If groups are configured, deny for safety
+	if len(ua.config.AllowGroups) > 0 || len(ua.config.DenyGroups) > 0 {
+		ua.logger.Infof("Denying user %s due to group lookup failure with group restrictions configured", username)
+		return false
+	}
+
+	// No group restrictions configured, allow
+	return true
+}
+
+// isUserInDenyGroups checks if user belongs to any denied group.
+func (ua *UserAuthorizer) isUserInDenyGroups(username string, userGroups []string) bool {
 	for _, denyPattern := range ua.config.DenyGroups {
 		for _, userGroup := range userGroups {
 			if ua.matchWildcard(denyPattern, userGroup) {
 				ua.logger.Infof("User %s denied by DenyGroups pattern: %s (member of %s)", username, denyPattern, userGroup)
-				return false
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isUserInAllowGroups checks if user belongs to any allowed group.
+func (ua *UserAuthorizer) isUserInAllowGroups(username string, userGroups []string) bool {
+	// If no AllowGroups specified, user is allowed
+	if len(ua.config.AllowGroups) == 0 {
+		return true
+	}
+
+	for _, allowPattern := range ua.config.AllowGroups {
+		for _, userGroup := range userGroups {
+			if ua.matchWildcard(allowPattern, userGroup) {
+				ua.logger.Debugf("User %s allowed by AllowGroups pattern: %s (member of %s)", username, allowPattern, userGroup)
+				return true
 			}
 		}
 	}
 
-	// If AllowGroups is specified, user must be a member of at least one allowed group
-	if len(ua.config.AllowGroups) > 0 {
-		for _, allowPattern := range ua.config.AllowGroups {
-			for _, userGroup := range userGroups {
-				if ua.matchWildcard(allowPattern, userGroup) {
-					ua.logger.Debugf("User %s allowed by AllowGroups pattern: %s (member of %s)", username, allowPattern, userGroup)
-					return true
-				}
-			}
-		}
-		ua.logger.Infof("User %s not in any AllowGroups", username)
-		return false
-	}
-
-	// If no AllowGroups specified, user is allowed (unless denied above)
-	return true
+	ua.logger.Infof("User %s not in any AllowGroups", username)
+	return false
 }
 
 // getUserGroups returns the list of group names that a user belongs to.

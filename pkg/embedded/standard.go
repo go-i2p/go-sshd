@@ -76,16 +76,48 @@ func (s *StandardEmbeddedSSHServer) Configure(opts ConfigOptions) error {
 		return fmt.Errorf("cannot reconfigure server after Start() has been called")
 	}
 
-	// Validate and set listener
+	if err := s.applyConfigurationOptions(opts); err != nil {
+		return err
+	}
+
+	if err := s.initLogger(); err != nil {
+		return fmt.Errorf("failed to initialize logger: %w", err)
+	}
+
+	if err := s.initSSHServer(); err != nil {
+		return fmt.Errorf("failed to initialize SSH server: %w", err)
+	}
+
+	return nil
+}
+
+// applyConfigurationOptions validates and applies configuration options.
+func (s *StandardEmbeddedSSHServer) applyConfigurationOptions(opts ConfigOptions) error {
+	if err := s.validateAndSetListener(opts); err != nil {
+		return err
+	}
+
+	s.opts = opts
+	s.applyConfigDefaults()
+
+	return nil
+}
+
+// validateAndSetListener validates and sets the listener from options.
+func (s *StandardEmbeddedSSHServer) validateAndSetListener(opts ConfigOptions) error {
 	if opts.Listener != nil {
 		s.listener = opts.Listener
 	}
+
 	if s.listener == nil {
 		return fmt.Errorf("listener is required")
 	}
 
-	// Apply configuration defaults
-	s.opts = opts
+	return nil
+}
+
+// applyConfigDefaults applies default configurations for nil sections.
+func (s *StandardEmbeddedSSHServer) applyConfigDefaults() {
 	if s.opts.Authentication == nil {
 		s.opts.Authentication = DefaultAuthenticationConfig()
 	}
@@ -98,18 +130,6 @@ func (s *StandardEmbeddedSSHServer) Configure(opts ConfigOptions) error {
 	if s.opts.Forwarding == nil {
 		s.opts.Forwarding = DefaultForwardingConfig()
 	}
-
-	// Initialize logger
-	if err := s.initLogger(); err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
-	}
-
-	// Initialize SSH server
-	if err := s.initSSHServer(); err != nil {
-		return fmt.Errorf("failed to initialize SSH server: %w", err)
-	}
-
-	return nil
 }
 
 // initLogger initializes the logger from configuration.
@@ -176,42 +196,13 @@ func (s *StandardEmbeddedSSHServer) configureHostKeys(sshServer *ssh.Server) err
 	}
 
 	// Handle in-memory key data
-	if len(s.opts.HostKeys.Data) > 0 {
-		for i, keyData := range s.opts.HostKeys.Data {
-			signer, err := gossh.ParsePrivateKey(keyData)
-			if err != nil {
-				s.logger.Warnf("Failed to parse in-memory host key %d: %v", i, err)
-				continue
-			}
-			if err := crypto.ValidateHostKey(signer); err != nil {
-				s.logger.Warnf("Invalid in-memory host key %d: %v", i, err)
-				continue
-			}
-			sshServer.AddHostKey(signer)
-			fingerprint := crypto.GetKeyFingerprint(signer.PublicKey())
-			keyType := crypto.GetKeyType(signer.PublicKey())
-			s.logger.Infof("Loaded in-memory host key: %s %s", keyType, fingerprint)
-		}
+	if err := s.loadInMemoryHostKeys(sshServer); err != nil {
+		s.logger.Warnf("Failed to load in-memory host keys: %v", err)
 	}
 
 	// Load host keys from paths or auto-generate
-	if len(hostKeyPaths) > 0 || s.opts.HostKeys.AutoGenerate {
-		hostKeyManager := crypto.NewHostKeyManager(hostKeyPaths)
-		signers, err := hostKeyManager.LoadOrGenerateKeys()
-		if err != nil {
-			return fmt.Errorf("failed to load or generate host keys: %w", err)
-		}
-
-		for i, signer := range signers {
-			if err := crypto.ValidateHostKey(signer); err != nil {
-				s.logger.Warnf("Invalid host key %d: %v", i, err)
-				continue
-			}
-			sshServer.AddHostKey(signer)
-			fingerprint := crypto.GetKeyFingerprint(signer.PublicKey())
-			keyType := crypto.GetKeyType(signer.PublicKey())
-			s.logger.Infof("Loaded host key: %s %s", keyType, fingerprint)
-		}
+	if err := s.loadFileBasedHostKeys(sshServer, hostKeyPaths); err != nil {
+		return err
 	}
 
 	// Verify at least one key was loaded
@@ -220,6 +211,72 @@ func (s *StandardEmbeddedSSHServer) configureHostKeys(sshServer *ssh.Server) err
 	}
 
 	return nil
+}
+
+// loadInMemoryHostKeys loads host keys from in-memory byte data.
+func (s *StandardEmbeddedSSHServer) loadInMemoryHostKeys(sshServer *ssh.Server) error {
+	if len(s.opts.HostKeys.Data) == 0 {
+		return nil
+	}
+
+	for i, keyData := range s.opts.HostKeys.Data {
+		if err := s.parseAndAddHostKey(sshServer, keyData, i); err != nil {
+			s.logger.Warnf("Failed to process in-memory host key %d: %v", i, err)
+			continue
+		}
+	}
+	return nil
+}
+
+// parseAndAddHostKey parses a single host key and adds it to the server.
+func (s *StandardEmbeddedSSHServer) parseAndAddHostKey(sshServer *ssh.Server, keyData []byte, index int) error {
+	signer, err := gossh.ParsePrivateKey(keyData)
+	if err != nil {
+		return fmt.Errorf("parse failed: %w", err)
+	}
+
+	if err := crypto.ValidateHostKey(signer); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	sshServer.AddHostKey(signer)
+	s.logHostKeyLoaded(signer, "in-memory")
+	return nil
+}
+
+// loadFileBasedHostKeys loads host keys from file paths or generates them.
+func (s *StandardEmbeddedSSHServer) loadFileBasedHostKeys(sshServer *ssh.Server, hostKeyPaths []string) error {
+	if len(hostKeyPaths) == 0 && !s.opts.HostKeys.AutoGenerate {
+		return nil
+	}
+
+	hostKeyManager := crypto.NewHostKeyManager(hostKeyPaths)
+	signers, err := hostKeyManager.LoadOrGenerateKeys()
+	if err != nil {
+		return fmt.Errorf("failed to load or generate host keys: %w", err)
+	}
+
+	for i, signer := range signers {
+		if err := crypto.ValidateHostKey(signer); err != nil {
+			s.logger.Warnf("Invalid host key %d: %v", i, err)
+			continue
+		}
+		sshServer.AddHostKey(signer)
+		s.logHostKeyLoaded(signer, "file")
+	}
+
+	return nil
+}
+
+// logHostKeyLoaded logs information about a successfully loaded host key.
+func (s *StandardEmbeddedSSHServer) logHostKeyLoaded(signer gossh.Signer, source string) {
+	fingerprint := crypto.GetKeyFingerprint(signer.PublicKey())
+	keyType := crypto.GetKeyType(signer.PublicKey())
+	if source == "in-memory" {
+		s.logger.Infof("Loaded in-memory host key: %s %s", keyType, fingerprint)
+	} else {
+		s.logger.Infof("Loaded host key: %s %s", keyType, fingerprint)
+	}
 }
 
 // configureAuthentication sets up SSH authentication handlers.
@@ -370,7 +427,6 @@ func (w *sessionWrapper) Pty() *PtyRequest {
 func (s *StandardEmbeddedSSHServer) configureForwarding(sshServer *ssh.Server) error {
 	fwdCfg := s.opts.Forwarding
 
-	// Convert embedded config to pkg/config format for handlers
 	cfg := &config.Config{
 		AllowTcpForwarding:   fwdCfg.AllowTCPForwarding,
 		AllowAgentForwarding: fwdCfg.AllowAgentForwarding,
@@ -380,66 +436,84 @@ func (s *StandardEmbeddedSSHServer) configureForwarding(sshServer *ssh.Server) e
 		GatewayPorts:         fwdCfg.GatewayPorts,
 	}
 
-	// Configure TCP port forwarding
-	if fwdCfg.AllowTCPForwarding {
-		forwardingHandler := handlers.NewForwardingHandler(cfg, s.logger)
-
-		sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()
-		sshServer.ReversePortForwardingCallback = forwardingHandler.CreateReversePortForwardHandler()
-
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
-
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		tcpHandler := forwardingHandler.GetTCPHandler()
-		sshServer.RequestHandlers["tcpip-forward"] = tcpHandler.HandleSSHRequest
-		sshServer.RequestHandlers["cancel-tcpip-forward"] = tcpHandler.HandleSSHRequest
-
-		s.logger.Info("TCP port forwarding enabled")
-	}
-
-	// Configure agent forwarding
-	if fwdCfg.AllowAgentForwarding {
-		agentHandler := handlers.NewAgentHandler(cfg, s.logger)
-
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["auth-agent@openssh.com"] = agentHandler.CreateAgentForwardingHandler()
-
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		sshServer.RequestHandlers["auth-agent-req@openssh.com"] = agentHandler.CreateAgentRequestHandler()
-
-		s.logger.Info("SSH agent forwarding enabled")
-	}
-
-	// Configure X11 forwarding
-	if fwdCfg.AllowX11Forwarding {
-		x11Handler := handlers.NewX11Handler(cfg, s.logger)
-
-		if sshServer.ChannelHandlers == nil {
-			sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
-		}
-		sshServer.ChannelHandlers["x11"] = x11Handler.CreateX11ChannelHandler()
-
-		if sshServer.RequestHandlers == nil {
-			sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
-		}
-		sshServer.RequestHandlers["x11-req"] = x11Handler.CreateX11RequestHandler()
-
-		s.logger.WithFields(logrus.Fields{
-			"displayOffset": fwdCfg.X11DisplayOffset,
-			"useLocalhost":  fwdCfg.X11UseLocalhost,
-		}).Info("X11 forwarding enabled")
-	}
+	s.configureTCPForwarding(sshServer, fwdCfg, cfg)
+	s.configureAgentForwarding(sshServer, fwdCfg, cfg)
+	s.configureX11Forwarding(sshServer, fwdCfg, cfg)
 
 	return nil
+}
+
+// configureTCPForwarding sets up TCP port forwarding handlers.
+func (s *StandardEmbeddedSSHServer) configureTCPForwarding(sshServer *ssh.Server, fwdCfg *ForwardingConfig, cfg *config.Config) {
+	if !fwdCfg.AllowTCPForwarding {
+		return
+	}
+
+	forwardingHandler := handlers.NewForwardingHandler(cfg, s.logger)
+
+	sshServer.LocalPortForwardingCallback = forwardingHandler.CreateLocalPortForwardHandler()
+	sshServer.ReversePortForwardingCallback = forwardingHandler.CreateReversePortForwardHandler()
+
+	s.ensureChannelHandlers(sshServer)
+	sshServer.ChannelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
+
+	s.ensureRequestHandlers(sshServer)
+	tcpHandler := forwardingHandler.GetTCPHandler()
+	sshServer.RequestHandlers["tcpip-forward"] = tcpHandler.HandleSSHRequest
+	sshServer.RequestHandlers["cancel-tcpip-forward"] = tcpHandler.HandleSSHRequest
+
+	s.logger.Info("TCP port forwarding enabled")
+}
+
+// configureAgentForwarding sets up SSH agent forwarding handlers.
+func (s *StandardEmbeddedSSHServer) configureAgentForwarding(sshServer *ssh.Server, fwdCfg *ForwardingConfig, cfg *config.Config) {
+	if !fwdCfg.AllowAgentForwarding {
+		return
+	}
+
+	agentHandler := handlers.NewAgentHandler(cfg, s.logger)
+
+	s.ensureChannelHandlers(sshServer)
+	sshServer.ChannelHandlers["auth-agent@openssh.com"] = agentHandler.CreateAgentForwardingHandler()
+
+	s.ensureRequestHandlers(sshServer)
+	sshServer.RequestHandlers["auth-agent-req@openssh.com"] = agentHandler.CreateAgentRequestHandler()
+
+	s.logger.Info("SSH agent forwarding enabled")
+}
+
+// configureX11Forwarding sets up X11 display forwarding handlers.
+func (s *StandardEmbeddedSSHServer) configureX11Forwarding(sshServer *ssh.Server, fwdCfg *ForwardingConfig, cfg *config.Config) {
+	if !fwdCfg.AllowX11Forwarding {
+		return
+	}
+
+	x11Handler := handlers.NewX11Handler(cfg, s.logger)
+
+	s.ensureChannelHandlers(sshServer)
+	sshServer.ChannelHandlers["x11"] = x11Handler.CreateX11ChannelHandler()
+
+	s.ensureRequestHandlers(sshServer)
+	sshServer.RequestHandlers["x11-req"] = x11Handler.CreateX11RequestHandler()
+
+	s.logger.WithFields(logrus.Fields{
+		"displayOffset": fwdCfg.X11DisplayOffset,
+		"useLocalhost":  fwdCfg.X11UseLocalhost,
+	}).Info("X11 forwarding enabled")
+}
+
+// ensureChannelHandlers initializes the channel handlers map if needed.
+func (s *StandardEmbeddedSSHServer) ensureChannelHandlers(sshServer *ssh.Server) {
+	if sshServer.ChannelHandlers == nil {
+		sshServer.ChannelHandlers = make(map[string]ssh.ChannelHandler)
+	}
+}
+
+// ensureRequestHandlers initializes the request handlers map if needed.
+func (s *StandardEmbeddedSSHServer) ensureRequestHandlers(sshServer *ssh.Server) {
+	if sshServer.RequestHandlers == nil {
+		sshServer.RequestHandlers = make(map[string]ssh.RequestHandler)
+	}
 }
 
 // Start begins accepting SSH connections on the provided listener.

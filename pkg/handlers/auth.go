@@ -128,67 +128,106 @@ func (a *AuthHandler) CreatePublicKeyHandler() ssh.PublicKeyHandler {
 	return func(ctx ssh.Context, key ssh.PublicKey) bool {
 		user := ctx.User()
 
-		// Check if public key authentication is enabled
-		if !a.config.PubkeyAuthentication {
-			a.logger.Debugf("Public key authentication disabled, rejecting user %s", user)
+		if !a.isPublicKeyAuthEnabled(user) {
 			return false
 		}
 
 		a.logger.Infof("Public key authentication attempt for user %s from %s", user, ctx.RemoteAddr())
 
-		// Check user authorization first (before expensive key operations)
-		if !a.authorizer.IsUserAllowed(user, ctx.RemoteAddr().String()) {
-			a.logger.Warnf("User %s not authorized for access", user)
+		if !a.checkUserAuthorization(user, ctx.RemoteAddr().String(), "publickey") {
 			return false
 		}
 
-		// Check group authorization
-		if !a.authorizer.IsGroupAllowed(user) {
-			a.logger.Warnf("User %s not in allowed groups", user)
-			return false
+		// Try certificate authentication first if applicable
+		if a.tryCertificateAuth(ctx, user, key) {
+			return true
 		}
 
-		// Check root login permissions
-		if !a.authorizer.IsRootLoginAllowed(user, "publickey") {
-			a.logger.Warnf("Root public key login denied for user %s", user)
-			return false
-		}
-
-		// Check if this is a certificate - certificates implement PublicKey interface
-		if cert, ok := key.(*gossh.Certificate); ok {
-			// Try certificate authentication first
-			if a.certValidator != nil && a.certValidator.IsCertificateAuthenticationEnabled() {
-				a.logger.Debugf("Certificate detected for user %s, attempting certificate validation", user)
-				if err := a.certValidator.ValidateCertificate(user, cert); err == nil {
-					a.logger.Infof("Certificate authentication successful for user %s", user)
-					return true
-				}
-				a.logger.Debugf("Certificate validation failed for user %s, falling back to authorized_keys", user)
-			} else {
-				a.logger.Debugf("Certificate authentication not configured, treating as regular public key")
-			}
-		}
-
-		// Use crypto/ssh for authorized keys validation (standard public keys and fallback for certs)
+		// Use crypto/ssh for authorized keys validation
 		success := a.validatePublicKey(ctx, user, key, ctx.RemoteAddr().String())
 
-		if success {
-			// Check forced-commands-only for root after key validation
-			// At this point, key options are stored in context
-			if a.authorizer.IsRootForcedCommandsRequired(user) {
-				keyOptions := GetAuthorizedKeyOptionsFromContext(ctx)
-				if keyOptions == nil || keyOptions.Command == "" {
-					a.logger.Warnf("Root public key login denied: PermitRootLogin=forced-commands-only but key has no command= restriction")
-					return false
-				}
-				a.logger.Debugf("Root login with forced-commands-only accepted (command=%s)", keyOptions.Command)
-			}
-			a.logger.Infof("Public key authentication successful for user %s", user)
-		} else {
-			a.logger.Warnf("Public key authentication failed for user %s", user)
+		if success && !a.validateRootForcedCommand(user, ctx) {
+			return false
 		}
 
+		a.logPublicKeyResult(user, success)
 		return success
+	}
+}
+
+// isPublicKeyAuthEnabled checks if public key authentication is enabled.
+func (a *AuthHandler) isPublicKeyAuthEnabled(user string) bool {
+	if !a.config.PubkeyAuthentication {
+		a.logger.Debugf("Public key authentication disabled, rejecting user %s", user)
+		return false
+	}
+	return true
+}
+
+// checkUserAuthorization verifies user and group authorization.
+func (a *AuthHandler) checkUserAuthorization(user, remoteAddr, authMethod string) bool {
+	if !a.authorizer.IsUserAllowed(user, remoteAddr) {
+		a.logger.Warnf("User %s not authorized for access", user)
+		return false
+	}
+
+	if !a.authorizer.IsGroupAllowed(user) {
+		a.logger.Warnf("User %s not in allowed groups", user)
+		return false
+	}
+
+	if !a.authorizer.IsRootLoginAllowed(user, authMethod) {
+		a.logger.Warnf("Root %s login denied for user %s", authMethod, user)
+		return false
+	}
+
+	return true
+}
+
+// tryCertificateAuth attempts certificate-based authentication if applicable.
+func (a *AuthHandler) tryCertificateAuth(ctx ssh.Context, user string, key ssh.PublicKey) bool {
+	cert, ok := key.(*gossh.Certificate)
+	if !ok {
+		return false
+	}
+
+	if a.certValidator == nil || !a.certValidator.IsCertificateAuthenticationEnabled() {
+		a.logger.Debugf("Certificate authentication not configured, treating as regular public key")
+		return false
+	}
+
+	a.logger.Debugf("Certificate detected for user %s, attempting certificate validation", user)
+	if err := a.certValidator.ValidateCertificate(user, cert); err == nil {
+		a.logger.Infof("Certificate authentication successful for user %s", user)
+		return true
+	}
+
+	a.logger.Debugf("Certificate validation failed for user %s, falling back to authorized_keys", user)
+	return false
+}
+
+// validateRootForcedCommand checks forced-commands-only requirement for root.
+func (a *AuthHandler) validateRootForcedCommand(user string, ctx ssh.Context) bool {
+	if !a.authorizer.IsRootForcedCommandsRequired(user) {
+		return true
+	}
+
+	keyOptions := GetAuthorizedKeyOptionsFromContext(ctx)
+	if keyOptions == nil || keyOptions.Command == "" {
+		a.logger.Warnf("Root public key login denied: PermitRootLogin=forced-commands-only but key has no command= restriction")
+		return false
+	}
+
+	a.logger.Debugf("Root login with forced-commands-only accepted (command=%s)", keyOptions.Command)
+	return true
+}
+
+// logPublicKeyResult logs the authentication result.
+func (a *AuthHandler) logPublicKeyResult(user string, success bool) {
+	if success {
+		a.logger.Infof("Public key authentication successful for user %s", user)
+	} else {
+		a.logger.Warnf("Public key authentication failed for user %s", user)
 	}
 }
 
@@ -302,16 +341,8 @@ func (a *AuthHandler) validatePublicKey(ctx ssh.Context, username string, client
 // Uses crypto/ssh for all key parsing and comparison logic.
 // Also parses and validates key options like command restrictions.
 func (a *AuthHandler) checkAuthorizedKeysFile(ctx ssh.Context, userInfo *user.User, keyFile string, clientKey ssh.PublicKey, remoteAddr string) bool {
-	// Handle relative paths and ~ expansion like OpenSSH
-	var filePath string
-	if strings.HasPrefix(keyFile, "~/") || !filepath.IsAbs(keyFile) {
-		// Relative to user's home directory
-		filePath = filepath.Join(userInfo.HomeDir, strings.TrimPrefix(keyFile, "~/"))
-	} else {
-		filePath = keyFile
-	}
+	filePath := a.resolveKeyFilePath(keyFile, userInfo.HomeDir)
 
-	// Open authorized_keys file
 	file, err := os.Open(filePath)
 	if err != nil {
 		a.logger.Debugf("Cannot open authorized_keys file %s for user %s: %v", filePath, userInfo.Username, err)
@@ -319,7 +350,19 @@ func (a *AuthHandler) checkAuthorizedKeysFile(ctx ssh.Context, userInfo *user.Us
 	}
 	defer file.Close()
 
-	// Parse each line using crypto/ssh
+	return a.scanAuthorizedKeysFile(ctx, file, filePath, userInfo.Username, clientKey, remoteAddr)
+}
+
+// resolveKeyFilePath resolves the authorized_keys file path with ~ expansion.
+func (a *AuthHandler) resolveKeyFilePath(keyFile, homeDir string) string {
+	if strings.HasPrefix(keyFile, "~/") || !filepath.IsAbs(keyFile) {
+		return filepath.Join(homeDir, strings.TrimPrefix(keyFile, "~/"))
+	}
+	return keyFile
+}
+
+// scanAuthorizedKeysFile scans the file line-by-line to find matching keys.
+func (a *AuthHandler) scanAuthorizedKeysFile(ctx ssh.Context, file *os.File, filePath, username string, clientKey ssh.PublicKey, remoteAddr string) bool {
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 
@@ -327,35 +370,11 @@ func (a *AuthHandler) checkAuthorizedKeysFile(ctx ssh.Context, userInfo *user.Us
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") {
+		if a.shouldSkipLine(line) {
 			continue
 		}
 
-		// Parse authorized_keys options and extract the key part
-		keyPart, options, err := ParseAuthorizedKeyOptions(line)
-		if err != nil {
-			a.logger.Debugf("Failed to parse authorized_keys line at %s:%d: %v", filePath, lineNum, err)
-			continue
-		}
-
-		// Parse the public key using crypto/ssh
-		authorizedKey, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyPart))
-		if err != nil {
-			a.logger.Debugf("Failed to parse authorized key at %s:%d: %v", filePath, lineNum, err)
-			continue
-		}
-
-		// Compare keys by comparing their wire format (most reliable method)
-		if string(authorizedKey.Marshal()) == string(clientKey.Marshal()) {
-			a.logger.Debugf("Matching public key found in %s:%d for user %s", filePath, lineNum, userInfo.Username)
-
-			// Validate key options if present
-			if options != nil && !a.validateKeyOptions(ctx, options, userInfo.Username, remoteAddr) {
-				a.logger.Warnf("Public key found but options validation failed for user %s", userInfo.Username)
-				return false
-			}
-
+		if a.processAuthorizedKeyLine(ctx, line, filePath, lineNum, username, clientKey, remoteAddr) {
 			return true
 		}
 	}
@@ -365,6 +384,44 @@ func (a *AuthHandler) checkAuthorizedKeysFile(ctx ssh.Context, userInfo *user.Us
 	}
 
 	return false
+}
+
+// shouldSkipLine checks if a line should be skipped during parsing.
+func (a *AuthHandler) shouldSkipLine(line string) bool {
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+// processAuthorizedKeyLine processes a single line from authorized_keys file.
+func (a *AuthHandler) processAuthorizedKeyLine(ctx ssh.Context, line, filePath string, lineNum int, username string, clientKey ssh.PublicKey, remoteAddr string) bool {
+	keyPart, options, err := ParseAuthorizedKeyOptions(line)
+	if err != nil {
+		a.logger.Debugf("Failed to parse authorized_keys line at %s:%d: %v", filePath, lineNum, err)
+		return false
+	}
+
+	authorizedKey, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyPart))
+	if err != nil {
+		a.logger.Debugf("Failed to parse authorized key at %s:%d: %v", filePath, lineNum, err)
+		return false
+	}
+
+	if !a.keysMatch(authorizedKey, clientKey) {
+		return false
+	}
+
+	a.logger.Debugf("Matching public key found in %s:%d for user %s", filePath, lineNum, username)
+
+	if options != nil && !a.validateKeyOptions(ctx, options, username, remoteAddr) {
+		a.logger.Warnf("Public key found but options validation failed for user %s", username)
+		return false
+	}
+
+	return true
+}
+
+// keysMatch checks if two SSH public keys match by comparing wire format.
+func (a *AuthHandler) keysMatch(key1, key2 ssh.PublicKey) bool {
+	return string(key1.Marshal()) == string(key2.Marshal())
 }
 
 // validateKeyOptions validates authorized_keys options and applies restrictions.
@@ -404,14 +461,7 @@ func (a *AuthHandler) validateKeyOptions(ctx ssh.Context, options *AuthorizedKey
 // This implements OpenSSH-compatible "from" option validation for authorized keys.
 // Supports IP addresses, CIDR blocks, and hostname patterns with wildcards.
 func (a *AuthHandler) validateSourceAddress(remoteAddr string, allowedPatterns []string, username string) bool {
-	// Extract IP address from remote address (format: "ip:port")
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		// If splitting fails, use the entire string (might be just an IP)
-		host = remoteAddr
-	}
-
-	remoteIP := net.ParseIP(host)
+	remoteIP, host := a.parseRemoteAddress(remoteAddr)
 	if remoteIP == nil {
 		a.logger.Warnf("Could not parse remote IP address: %s", host)
 		return false
@@ -420,33 +470,76 @@ func (a *AuthHandler) validateSourceAddress(remoteAddr string, allowedPatterns [
 	for _, pattern := range allowedPatterns {
 		pattern = strings.TrimSpace(pattern)
 
-		// Check for CIDR notation
-		if strings.Contains(pattern, "/") {
-			_, network, err := net.ParseCIDR(pattern)
-			if err != nil {
-				a.logger.Debugf("Invalid CIDR pattern '%s' for user %s: %v", pattern, username, err)
-				continue
-			}
-			if network.Contains(remoteIP) {
-				a.logger.Debugf("Remote address %s matches CIDR pattern %s for user %s", host, pattern, username)
-				return true
-			}
-		} else if ip := net.ParseIP(pattern); ip != nil {
-			// Direct IP address match
-			if ip.Equal(remoteIP) {
-				a.logger.Debugf("Remote address %s matches IP pattern %s for user %s", host, pattern, username)
-				return true
-			}
-		} else {
-			// Hostname pattern matching (basic implementation)
-			// For production, this should do proper reverse DNS lookup and pattern matching
-			a.logger.Debugf("Hostname pattern matching not fully implemented for pattern '%s'", pattern)
-			// As a fallback, do simple string comparison
-			if host == pattern {
-				a.logger.Debugf("Remote address %s matches hostname pattern %s for user %s", host, pattern, username)
-				return true
-			}
+		if a.matchCIDRPattern(pattern, remoteIP, host, username) {
+			return true
 		}
+
+		if a.matchIPPattern(pattern, remoteIP, host, username) {
+			return true
+		}
+
+		if a.matchHostnamePattern(pattern, host, username) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// parseRemoteAddress extracts the IP and host from remote address.
+func (a *AuthHandler) parseRemoteAddress(remoteAddr string) (net.IP, string) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+
+	remoteIP := net.ParseIP(host)
+	return remoteIP, host
+}
+
+// matchCIDRPattern checks if the IP matches a CIDR pattern.
+func (a *AuthHandler) matchCIDRPattern(pattern string, remoteIP net.IP, host, username string) bool {
+	if !strings.Contains(pattern, "/") {
+		return false
+	}
+
+	_, network, err := net.ParseCIDR(pattern)
+	if err != nil {
+		a.logger.Debugf("Invalid CIDR pattern '%s' for user %s: %v", pattern, username, err)
+		return false
+	}
+
+	if network.Contains(remoteIP) {
+		a.logger.Debugf("Remote address %s matches CIDR pattern %s for user %s", host, pattern, username)
+		return true
+	}
+
+	return false
+}
+
+// matchIPPattern checks if the IP matches a direct IP pattern.
+func (a *AuthHandler) matchIPPattern(pattern string, remoteIP net.IP, host, username string) bool {
+	ip := net.ParseIP(pattern)
+	if ip == nil {
+		return false
+	}
+
+	if ip.Equal(remoteIP) {
+		a.logger.Debugf("Remote address %s matches IP pattern %s for user %s", host, pattern, username)
+		return true
+	}
+
+	return false
+}
+
+// matchHostnamePattern checks if the host matches a hostname pattern.
+func (a *AuthHandler) matchHostnamePattern(pattern, host, username string) bool {
+	a.logger.Debugf("Hostname pattern matching not fully implemented for pattern '%s'", pattern)
+
+	// Basic fallback: simple string comparison
+	if host == pattern {
+		a.logger.Debugf("Remote address %s matches hostname pattern %s for user %s", host, pattern, username)
+		return true
 	}
 
 	return false
@@ -458,63 +551,61 @@ func (a *AuthHandler) validateSourceAddress(remoteAddr string, allowedPatterns [
 func (a *AuthHandler) authenticateKeyboardInteractive(username string, challenger gossh.KeyboardInteractiveChallenge) bool {
 	// Use PAM service name "sshd" for compatibility with OpenSSH
 	tx, err := pam.StartFunc("sshd", username, func(s pam.Style, msg string) (string, error) {
-		switch s {
-		case pam.PromptEchoOff:
-			// Password prompt - request with echo disabled
-			answers, err := challenger("", "", []string{msg}, []bool{false})
-			if err != nil {
-				a.logger.Debugf("Challenger failed for user %s: %v", username, err)
-				return "", err
-			}
-			if len(answers) == 0 {
-				return "", fmt.Errorf("no answer provided")
-			}
-			return answers[0], nil
-
-		case pam.PromptEchoOn:
-			// Username or visible prompt - request with echo enabled
-			answers, err := challenger("", "", []string{msg}, []bool{true})
-			if err != nil {
-				a.logger.Debugf("Challenger failed for user %s: %v", username, err)
-				return "", err
-			}
-			if len(answers) == 0 {
-				return "", fmt.Errorf("no answer provided")
-			}
-			return answers[0], nil
-
-		case pam.ErrorMsg:
-			// Error message - send to client as instruction
-			_, err := challenger("", msg, []string{}, []bool{})
-			if err != nil {
-				a.logger.Debugf("Failed to send error message to client for user %s: %v", username, err)
-			}
-			return "", nil
-
-		case pam.TextInfo:
-			// Informational message - send to client as instruction
-			_, err := challenger("", msg, []string{}, []bool{})
-			if err != nil {
-				a.logger.Debugf("Failed to send info message to client for user %s: %v", username, err)
-			}
-			return "", nil
-
-		default:
-			return "", fmt.Errorf("unsupported PAM conversation style: %v", s)
-		}
+		return a.handlePAMConversation(s, msg, username, challenger)
 	})
 	if err != nil {
 		a.logger.Errorf("Failed to start PAM transaction for user %s: %v", username, err)
 		return false
 	}
 
-	// Perform PAM authentication
+	return a.authenticatePAMSession(tx, username)
+}
+
+// handlePAMConversation handles a single PAM conversation prompt.
+func (a *AuthHandler) handlePAMConversation(style pam.Style, msg, username string, challenger gossh.KeyboardInteractiveChallenge) (string, error) {
+	switch style {
+	case pam.PromptEchoOff:
+		return a.handlePrompt(msg, username, challenger, false)
+	case pam.PromptEchoOn:
+		return a.handlePrompt(msg, username, challenger, true)
+	case pam.ErrorMsg:
+		return a.sendClientMessage(msg, username, challenger)
+	case pam.TextInfo:
+		return a.sendClientMessage(msg, username, challenger)
+	default:
+		return "", fmt.Errorf("unsupported PAM conversation style: %v", style)
+	}
+}
+
+// handlePrompt processes a PAM prompt with the SSH challenger.
+func (a *AuthHandler) handlePrompt(msg, username string, challenger gossh.KeyboardInteractiveChallenge, echo bool) (string, error) {
+	answers, err := challenger("", "", []string{msg}, []bool{echo})
+	if err != nil {
+		a.logger.Debugf("Challenger failed for user %s: %v", username, err)
+		return "", err
+	}
+	if len(answers) == 0 {
+		return "", fmt.Errorf("no answer provided")
+	}
+	return answers[0], nil
+}
+
+// sendClientMessage sends an informational or error message to the client.
+func (a *AuthHandler) sendClientMessage(msg, username string, challenger gossh.KeyboardInteractiveChallenge) (string, error) {
+	_, err := challenger("", msg, []string{}, []bool{})
+	if err != nil {
+		a.logger.Debugf("Failed to send message to client for user %s: %v", username, err)
+	}
+	return "", nil
+}
+
+// authenticatePAMSession performs PAM authentication and account validation.
+func (a *AuthHandler) authenticatePAMSession(tx *pam.Transaction, username string) bool {
 	if err := tx.Authenticate(0); err != nil {
 		a.logger.Debugf("PAM keyboard-interactive authentication failed for user %s: %v", username, err)
 		return false
 	}
 
-	// Check account validity
 	if err := tx.AcctMgmt(0); err != nil {
 		a.logger.Debugf("PAM account check failed for user %s: %v", username, err)
 		return false

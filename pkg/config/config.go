@@ -233,33 +233,53 @@ func (c *Config) validateHostKeys(result *ValidationResult) {
 		return
 	}
 
+	keyTypes := c.validateIndividualHostKeys(result)
+	c.recommendModernKeyTypes(result, keyTypes)
+}
+
+// validateIndividualHostKeys validates each configured host key.
+func (c *Config) validateIndividualHostKeys(result *ValidationResult) map[string]bool {
 	keyTypes := make(map[string]bool)
 
 	for _, keyPath := range c.HostKey {
-		// Check if file exists and is readable
-		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			result.AddIssue(ValidationWarning, "HostKey",
-				fmt.Sprintf("Host key file does not exist: %s", keyPath),
-				"Ensure the key file exists or will be auto-generated")
-		} else if err != nil {
-			result.AddIssue(ValidationError, "HostKey",
-				fmt.Sprintf("Cannot access host key file: %s (%v)", keyPath, err),
-				"Check file permissions and path")
-		}
-
-		// Detect key type from filename
-		keyType := detectKeyType(keyPath)
-		if keyType != "" {
-			if keyTypes[keyType] {
-				result.AddIssue(ValidationWarning, "HostKey",
-					fmt.Sprintf("Multiple %s host keys configured", keyType),
-					"Only one key per type is typically needed")
-			}
-			keyTypes[keyType] = true
-		}
+		c.checkHostKeyAccessibility(keyPath, result)
+		c.detectAndTrackKeyType(keyPath, keyTypes, result)
 	}
 
-	// Recommend modern key types
+	return keyTypes
+}
+
+// checkHostKeyAccessibility checks if a host key file exists and is accessible.
+func (c *Config) checkHostKeyAccessibility(keyPath string, result *ValidationResult) {
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		result.AddIssue(ValidationWarning, "HostKey",
+			fmt.Sprintf("Host key file does not exist: %s", keyPath),
+			"Ensure the key file exists or will be auto-generated")
+	} else if err != nil {
+		result.AddIssue(ValidationError, "HostKey",
+			fmt.Sprintf("Cannot access host key file: %s (%v)", keyPath, err),
+			"Check file permissions and path")
+	}
+}
+
+// detectAndTrackKeyType detects and tracks key types for duplicate detection.
+func (c *Config) detectAndTrackKeyType(keyPath string, keyTypes map[string]bool, result *ValidationResult) {
+	keyType := detectKeyType(keyPath)
+	if keyType == "" {
+		return
+	}
+
+	if keyTypes[keyType] {
+		result.AddIssue(ValidationWarning, "HostKey",
+			fmt.Sprintf("Multiple %s host keys configured", keyType),
+			"Only one key per type is typically needed")
+	}
+
+	keyTypes[keyType] = true
+}
+
+// recommendModernKeyTypes suggests using modern cryptographic key types.
+func (c *Config) recommendModernKeyTypes(result *ValidationResult, keyTypes map[string]bool) {
 	if !keyTypes["ed25519"] && !keyTypes["ecdsa"] {
 		result.AddIssue(ValidationInfo, "HostKey",
 			"Consider using Ed25519 or ECDSA keys for better security",
@@ -295,38 +315,50 @@ func (c *Config) validateAuthentication(result *ValidationResult) {
 
 // validateAuthorization checks user authorization settings.
 func (c *Config) validateAuthorization(result *ValidationResult) {
-	// Validate PermitRootLogin
+	c.validatePermitRootLogin(result)
+	c.checkUserListConflicts(result)
+}
+
+// validatePermitRootLogin validates the PermitRootLogin configuration.
+func (c *Config) validatePermitRootLogin(result *ValidationResult) {
 	validRootLoginValues := []string{"yes", "no", "prohibit-password", "forced-commands-only"}
-	isValid := false
-	for _, valid := range validRootLoginValues {
-		if c.PermitRootLogin == valid {
-			isValid = true
-			break
-		}
-	}
-	if !isValid {
+
+	if !c.isValidRootLoginValue(validRootLoginValues) {
 		result.AddIssue(ValidationError, "PermitRootLogin",
 			fmt.Sprintf("Invalid PermitRootLogin value: %s", c.PermitRootLogin),
 			"Use one of: yes, no, prohibit-password, forced-commands-only")
+		return
 	}
 
-	// Security warning for root login
 	if c.PermitRootLogin == "yes" {
 		result.AddIssue(ValidationWarning, "PermitRootLogin",
 			"Root login with password enabled - security risk",
 			"Use 'prohibit-password' or 'no' for better security")
 	}
+}
 
-	// Check for conflicts between AllowUsers and DenyUsers
-	if len(c.AllowUsers) > 0 && len(c.DenyUsers) > 0 {
-		// Check for overlapping patterns
-		for _, allowUser := range c.AllowUsers {
-			for _, denyUser := range c.DenyUsers {
-				if allowUser == denyUser {
-					result.AddIssue(ValidationWarning, "AllowUsers/DenyUsers",
-						fmt.Sprintf("User '%s' appears in both AllowUsers and DenyUsers", allowUser),
-						"Remove from one of the lists to avoid conflicts")
-				}
+// isValidRootLoginValue checks if the PermitRootLogin value is valid.
+func (c *Config) isValidRootLoginValue(validValues []string) bool {
+	for _, valid := range validValues {
+		if c.PermitRootLogin == valid {
+			return true
+		}
+	}
+	return false
+}
+
+// checkUserListConflicts validates AllowUsers and DenyUsers for conflicts.
+func (c *Config) checkUserListConflicts(result *ValidationResult) {
+	if len(c.AllowUsers) == 0 || len(c.DenyUsers) == 0 {
+		return
+	}
+
+	for _, allowUser := range c.AllowUsers {
+		for _, denyUser := range c.DenyUsers {
+			if allowUser == denyUser {
+				result.AddIssue(ValidationWarning, "AllowUsers/DenyUsers",
+					fmt.Sprintf("User '%s' appears in both AllowUsers and DenyUsers", allowUser),
+					"Remove from one of the lists to avoid conflicts")
 			}
 		}
 	}
