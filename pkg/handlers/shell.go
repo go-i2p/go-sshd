@@ -235,26 +235,19 @@ func (h *ShellHandler) getShellFromPasswd(uid string) (string, error) {
 	}
 	defer file.Close()
 
+	return scanPasswdForUID(file, uid)
+}
+
+// scanPasswdForUID scans a passwd file to find the shell for the given UID.
+func scanPasswdForUID(file *os.File, uid string) (string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Skip comments and empty lines
-		if line == "" || strings.HasPrefix(line, "#") {
+		if shouldSkipPasswdLine(line) {
 			continue
 		}
 
-		// Parse passwd entry: username:password:uid:gid:gecos:home:shell
-		fields := strings.Split(line, ":")
-		if len(fields) < 7 {
-			continue
-		}
-
-		// Match by UID
-		if fields[2] == uid {
-			shell := strings.TrimSpace(fields[6])
-			if shell == "" {
-				return "/bin/bash", nil // Empty shell field, default to bash
-			}
+		if shell, found := parsePasswdLineForUID(line, uid); found {
 			return shell, nil
 		}
 	}
@@ -264,6 +257,25 @@ func (h *ShellHandler) getShellFromPasswd(uid string) (string, error) {
 	}
 
 	return "", fmt.Errorf("user with UID %s not found in /etc/passwd", uid)
+}
+
+// shouldSkipPasswdLine checks if a passwd line should be skipped.
+func shouldSkipPasswdLine(line string) bool {
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+// parsePasswdLineForUID parses a passwd line and returns the shell if UID matches.
+func parsePasswdLineForUID(line, uid string) (string, bool) {
+	fields := strings.Split(line, ":")
+	if len(fields) < 7 || fields[2] != uid {
+		return "", false
+	}
+
+	shell := strings.TrimSpace(fields[6])
+	if shell == "" {
+		return "/bin/bash", true
+	}
+	return shell, true
 }
 
 // buildEnvironment creates environment variables for the shell session.

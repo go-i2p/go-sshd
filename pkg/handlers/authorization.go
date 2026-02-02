@@ -54,38 +54,54 @@ func NewUserAuthorizer(cfg *config.Config, logger *logrus.Logger) *UserAuthorize
 // Follows OpenSSH precedence: DenyUsers is checked first, then AllowUsers.
 // Patterns support wildcards (* and ?) and user@host format.
 func (ua *UserAuthorizer) IsUserAllowed(username, remoteAddr string) bool {
-	// Extract hostname/IP from remote address
-	host := remoteAddr
-	if strings.Contains(remoteAddr, ":") {
-		// Remove port if present (format: "host:port")
-		parts := strings.Split(remoteAddr, ":")
-		if len(parts) >= 2 {
-			host = strings.Join(parts[:len(parts)-1], ":")
-		}
-	}
+	host := extractHostFromAddr(remoteAddr)
 
-	// Check DenyUsers first (takes precedence)
-	for _, pattern := range ua.config.DenyUsers {
-		if ua.matchUserPattern(pattern, username, host) {
-			ua.logger.Infof("User %s denied by DenyUsers pattern: %s", username, pattern)
-			return false
-		}
-	}
-
-	// If AllowUsers is specified, user must match at least one pattern
-	if len(ua.config.AllowUsers) > 0 {
-		for _, pattern := range ua.config.AllowUsers {
-			if ua.matchUserPattern(pattern, username, host) {
-				ua.logger.Debugf("User %s allowed by AllowUsers pattern: %s", username, pattern)
-				return true
-			}
-		}
-		ua.logger.Infof("User %s not in AllowUsers list", username)
+	if ua.isDeniedByDenyUsers(username, host) {
 		return false
 	}
 
-	// If no AllowUsers specified, user is allowed (unless denied above)
-	return true
+	return ua.isAllowedByAllowUsers(username, host)
+}
+
+// extractHostFromAddr extracts the hostname or IP from a remote address, removing the port.
+func extractHostFromAddr(remoteAddr string) string {
+	if !strings.Contains(remoteAddr, ":") {
+		return remoteAddr
+	}
+
+	parts := strings.Split(remoteAddr, ":")
+	if len(parts) >= 2 {
+		return strings.Join(parts[:len(parts)-1], ":")
+	}
+	return remoteAddr
+}
+
+// isDeniedByDenyUsers checks if the user matches any DenyUsers patterns.
+func (ua *UserAuthorizer) isDeniedByDenyUsers(username, host string) bool {
+	for _, pattern := range ua.config.DenyUsers {
+		if ua.matchUserPattern(pattern, username, host) {
+			ua.logger.Infof("User %s denied by DenyUsers pattern: %s", username, pattern)
+			return true
+		}
+	}
+	return false
+}
+
+// isAllowedByAllowUsers checks if the user matches AllowUsers patterns.
+func (ua *UserAuthorizer) isAllowedByAllowUsers(username, host string) bool {
+	if len(ua.config.AllowUsers) == 0 {
+		return true
+	}
+
+	for _, pattern := range ua.config.AllowUsers {
+		if ua.matchUserPattern(pattern, username, host) {
+			ua.logger.Debugf("User %s allowed by AllowUsers pattern: %s", username, pattern)
+			return true
+		}
+	}
+
+	ua.logger.Infof("User %s not in AllowUsers list", username)
+	return false
 }
 
 // IsRootLoginAllowed checks if root login is permitted based on PermitRootLogin setting.

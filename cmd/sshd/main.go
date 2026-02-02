@@ -54,81 +54,112 @@ advantages including single binary distribution and efficient resource usage.`,
 				return nil
 			}
 
-			// Load configuration using OpenSSH-compatible parser
-			cfg, err := config.Load(configFile)
+			// Load and apply configuration
+			cfg, err := loadAndApplyConfig(configFile, port)
 			if err != nil {
-				return fmt.Errorf("failed to load configuration: %w", err)
+				return err
 			}
 
-			// Override port if specified on command line
-			if port != 0 {
-				cfg.Port = port
-			}
-
-			// Test configuration and exit if requested
+			// Handle special modes
 			if testConfig {
 				return validateAndReportConfig(cfg)
 			}
-
-			// Generate host keys and exit if requested
 			if generateKeys {
 				return generateHostKeys(cfg)
 			}
-
-			// Check for inetd mode (socket activation)
 			if inetdMode {
 				return runInetdMode(cfg)
 			}
 
-			// Create network listener
-			listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
-			if err != nil {
-				return fmt.Errorf("failed to create listener: %w", err)
-			}
-			defer listener.Close()
-
-			// Convert config.Config to embedded.ConfigOptions
-			opts := configToEmbeddedOptions(cfg)
-			opts.Listener = listener
-
-			// Create embedded SSH server
-			srv, err := embedded.NewStandardEmbeddedSSHServer(listener, opts)
-			if err != nil {
-				return fmt.Errorf("failed to create server: %w", err)
-			}
-
-			// Ensure server is properly stopped on exit
-			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if stopErr := srv.Stop(ctx); stopErr != nil {
-					fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
-				}
-				srv.Cleanup()
-			}()
-
-			// Start server in foreground mode (by design for modern deployment)
-			// Go servers should not daemonize; instead, systemd or container runtimes
-			// manage the process lifecycle. The -D flag is accepted for OpenSSH CLI
-			// compatibility but the server always runs in foreground mode.
-			// See: https://www.freedesktop.org/software/systemd/man/daemon.html#New-Style%20Daemons
-			return srv.Start()
+			// Run standard server mode
+			return runStandardServerMode(cfg)
 		},
 	}
 
-	// OpenSSH-compatible command line flags
-	cmd.Flags().StringVarP(&configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
-	cmd.Flags().IntVarP(&port, "port", "p", 0, "port number (overrides config)")
+	configureCommandFlags(cmd, &configFile, &port, &daemon, &testConfig, &showVersion, &inetdMode, &generateKeys)
+	return cmd
+}
+
+// loadAndApplyConfig loads the SSH configuration file and applies command-line overrides.
+func loadAndApplyConfig(configFile string, port int) (*config.Config, error) {
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	if port != 0 {
+		cfg.Port = port
+	}
+
+	return cfg, nil
+}
+
+// configureCommandFlags sets up all OpenSSH-compatible command line flags.
+func configureCommandFlags(cmd *cobra.Command, configFile *string, port *int, daemon *bool,
+	testConfig *bool, showVersion *bool, inetdMode *bool, generateKeys *bool) {
+	cmd.Flags().StringVarP(configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
+	cmd.Flags().IntVarP(port, "port", "p", 0, "port number (overrides config)")
 	// Note: -D flag accepted for OpenSSH compatibility but has no effect.
 	// Modern Go servers run in foreground by design for systemd/container management.
-	// This is the recommended approach for containerized environments and systemd services.
-	cmd.Flags().BoolVarP(&daemon, "daemon", "D", false, "run in foreground mode (default, for systemd/container compatibility)")
-	cmd.Flags().BoolVarP(&testConfig, "test", "t", false, "test configuration and exit")
-	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
-	cmd.Flags().BoolVarP(&inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
-	cmd.Flags().BoolVarP(&generateKeys, "generate-keys", "G", false, "generate host keys and exit")
+	cmd.Flags().BoolVarP(daemon, "daemon", "D", false, "run in foreground mode (default, for systemd/container compatibility)")
+	cmd.Flags().BoolVarP(testConfig, "test", "t", false, "test configuration and exit")
+	cmd.Flags().BoolVarP(showVersion, "version", "V", false, "show version information")
+	cmd.Flags().BoolVarP(inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
+	cmd.Flags().BoolVarP(generateKeys, "generate-keys", "G", false, "generate host keys and exit")
+}
 
-	return cmd
+// runStandardServerMode initializes and runs the SSH server in standard mode.
+func runStandardServerMode(cfg *config.Config) error {
+	listener, err := createTCPListener(cfg.Port)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	srv, err := createEmbeddedServer(cfg, listener)
+	if err != nil {
+		return err
+	}
+
+	setupServerCleanup(srv)
+	// Start server in foreground mode (by design for modern deployment).
+	// Go servers should not daemonize; instead, systemd or container runtimes
+	// manage the process lifecycle.
+	return srv.Start()
+}
+
+// createTCPListener creates a TCP network listener on the specified port.
+func createTCPListener(port int) (net.Listener, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create listener: %w", err)
+	}
+	return listener, nil
+}
+
+// createEmbeddedServer creates and configures an embedded SSH server instance.
+func createEmbeddedServer(cfg *config.Config, listener net.Listener) (embedded.EmbeddedSSHServer, error) {
+	opts := configToEmbeddedOptions(cfg)
+	opts.Listener = listener
+
+	srv, err := embedded.NewStandardEmbeddedSSHServer(listener, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create server: %w", err)
+	}
+
+	return srv, nil
+}
+
+// setupServerCleanup configures deferred cleanup operations for the server.
+func setupServerCleanup(srv embedded.EmbeddedSSHServer) {
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if stopErr := srv.Stop(ctx); stopErr != nil {
+			fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
+		}
+		srv.Cleanup()
+	}()
 }
 
 // validateAndReportConfig performs comprehensive configuration validation

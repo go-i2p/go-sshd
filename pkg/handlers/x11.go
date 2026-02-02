@@ -87,62 +87,89 @@ func (h *X11Handler) CreateX11RequestHandler() ssh.RequestHandler {
 // Handles x11 channels by forwarding connections to the local X11 server.
 func (h *X11Handler) CreateX11ChannelHandler() ssh.ChannelHandler {
 	return func(srv *ssh.Server, conn *gossh.ServerConn, newChan gossh.NewChannel, ctx ssh.Context) {
-		if newChan.ChannelType() != "x11" {
-			newChan.Reject(gossh.UnknownChannelType, "unknown channel type")
+		if !h.validateX11Channel(newChan, ctx) {
 			return
 		}
 
-		// Check if X11 forwarding was approved for this session
-		if ctx.Value("x11-forwarding-enabled") != true {
-			newChan.Reject(gossh.Prohibited, "X11 forwarding not enabled for this session")
-			if h.logger != nil {
-				h.logger.WithFields(logrus.Fields{
-					"user":      ctx.User(),
-					"sessionID": ctx.SessionID(),
-				}).Warn("X11 channel rejected - forwarding not enabled")
-			}
-			return
-		}
-
-		// Accept the channel
-		channel, requests, err := newChan.Accept()
+		channel, requests, err := h.acceptX11Channel(newChan, ctx)
 		if err != nil {
-			if h.logger != nil {
-				h.logger.WithFields(logrus.Fields{
-					"user":      ctx.User(),
-					"sessionID": ctx.SessionID(),
-					"error":     err,
-				}).Error("Failed to accept X11 channel")
-			}
 			return
 		}
 
 		// Discard all requests on X11 channels (standard SSH behavior)
 		go gossh.DiscardRequests(requests)
 
-		// Connect to local X11 server
-		x11Conn, err := h.connectToLocalX11()
+		x11Conn, err := h.connectAndLogX11(ctx)
 		if err != nil {
 			channel.Close()
-			if h.logger != nil {
-				h.logger.WithFields(logrus.Fields{
-					"user":      ctx.User(),
-					"sessionID": ctx.SessionID(),
-					"error":     err,
-				}).Error("Failed to connect to local X11 server")
-			}
 			return
 		}
 
+		h.logX11Established(ctx)
+		go h.forwardX11Data(channel, x11Conn, ctx)
+	}
+}
+
+// validateX11Channel checks if the channel is valid and X11 forwarding is enabled.
+func (h *X11Handler) validateX11Channel(newChan gossh.NewChannel, ctx ssh.Context) bool {
+	if newChan.ChannelType() != "x11" {
+		newChan.Reject(gossh.UnknownChannelType, "unknown channel type")
+		return false
+	}
+
+	if ctx.Value("x11-forwarding-enabled") != true {
+		newChan.Reject(gossh.Prohibited, "X11 forwarding not enabled for this session")
 		if h.logger != nil {
 			h.logger.WithFields(logrus.Fields{
 				"user":      ctx.User(),
 				"sessionID": ctx.SessionID(),
-			}).Info("X11 forwarding connection established")
+			}).Warn("X11 channel rejected - forwarding not enabled")
 		}
+		return false
+	}
 
-		// Forward data bidirectionally
-		go h.forwardX11Data(channel, x11Conn, ctx)
+	return true
+}
+
+// acceptX11Channel accepts an X11 channel request and returns the channel.
+func (h *X11Handler) acceptX11Channel(newChan gossh.NewChannel, ctx ssh.Context) (gossh.Channel, <-chan *gossh.Request, error) {
+	channel, requests, err := newChan.Accept()
+	if err != nil {
+		if h.logger != nil {
+			h.logger.WithFields(logrus.Fields{
+				"user":      ctx.User(),
+				"sessionID": ctx.SessionID(),
+				"error":     err,
+			}).Error("Failed to accept X11 channel")
+		}
+		return nil, nil, err
+	}
+	return channel, requests, nil
+}
+
+// connectAndLogX11 connects to the local X11 server and logs any errors.
+func (h *X11Handler) connectAndLogX11(ctx ssh.Context) (net.Conn, error) {
+	x11Conn, err := h.connectToLocalX11()
+	if err != nil {
+		if h.logger != nil {
+			h.logger.WithFields(logrus.Fields{
+				"user":      ctx.User(),
+				"sessionID": ctx.SessionID(),
+				"error":     err,
+			}).Error("Failed to connect to local X11 server")
+		}
+		return nil, err
+	}
+	return x11Conn, nil
+}
+
+// logX11Established logs successful X11 forwarding connection establishment.
+func (h *X11Handler) logX11Established(ctx ssh.Context) {
+	if h.logger != nil {
+		h.logger.WithFields(logrus.Fields{
+			"user":      ctx.User(),
+			"sessionID": ctx.SessionID(),
+		}).Info("X11 forwarding connection established")
 	}
 }
 

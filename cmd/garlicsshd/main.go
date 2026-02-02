@@ -55,80 +55,113 @@ advantages including single binary distribution and efficient resource usage.`,
 				return nil
 			}
 
-			// Load configuration using OpenSSH-compatible parser
-			cfg, err := config.Load(configFile)
+			// Load and apply configuration
+			cfg, err := loadAndApplyConfig(configFile, port)
 			if err != nil {
-				return fmt.Errorf("failed to load configuration: %w", err)
+				return err
 			}
 
-			// Override port if specified on command line
-			if port != 0 {
-				cfg.Port = port
-			}
-
-			// Test configuration and exit if requested
+			// Handle special modes
 			if testConfig {
 				return validateAndReportConfig(cfg)
 			}
-
-			// Generate host keys and exit if requested
 			if generateKeys {
 				return generateHostKeys(cfg)
 			}
-
-			// Check for inetd mode (socket activation)
 			if inetdMode {
 				return runInetdMode(cfg)
 			}
 
-			// Create network listener
-			garlic, err := onramp.NewGarlic("garlicsshd", "127.0.0.1:7656", onramp.OPT_WIDE)
-			if err != nil {
-				return fmt.Errorf("failed to create listener: %w", err)
-			}
-			listener, err := garlic.Listen()
-			if err != nil {
-				return fmt.Errorf("failed to create listener: %w", err)
-			}
-			defer listener.Close()
-
-			// Convert config.Config to embedded.ConfigOptions
-			opts := configToEmbeddedOptions(cfg)
-			opts.Listener = listener
-
-			// Create embedded SSH server
-			srv, err := embedded.NewStandardEmbeddedSSHServer(listener, opts)
-			if err != nil {
-				return fmt.Errorf("failed to create server: %w", err)
-			}
-
-			// Ensure server is properly stopped on exit
-			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if stopErr := srv.Stop(ctx); stopErr != nil {
-					fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
-				}
-				srv.Cleanup()
-			}()
-
-			// Start server (runs in foreground regardless of daemon flag for now)
-			// The daemon flag behavior is maintained for compatibility but both modes
-			// use the same code path with the embedded server
-			return srv.Start()
+			// Run standard server mode
+			return runStandardServerMode(cfg)
 		},
 	}
 
-	// OpenSSH-compatible command line flags
-	cmd.Flags().StringVarP(&configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
-	cmd.Flags().IntVarP(&port, "port", "p", 0, "port number (overrides config)")
-	cmd.Flags().BoolVarP(&daemon, "daemon", "D", false, "run in foreground mode")
-	cmd.Flags().BoolVarP(&testConfig, "test", "t", false, "test configuration and exit")
-	cmd.Flags().BoolVarP(&showVersion, "version", "V", false, "show version information")
-	cmd.Flags().BoolVarP(&inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
-	cmd.Flags().BoolVarP(&generateKeys, "generate-keys", "G", false, "generate host keys and exit")
-
+	configureCommandFlags(cmd, &configFile, &port, &daemon, &testConfig, &showVersion, &inetdMode, &generateKeys)
 	return cmd
+}
+
+// loadAndApplyConfig loads the SSH configuration file and applies command-line overrides.
+func loadAndApplyConfig(configFile string, port int) (*config.Config, error) {
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	if port != 0 {
+		cfg.Port = port
+	}
+
+	return cfg, nil
+}
+
+// configureCommandFlags sets up all OpenSSH-compatible command line flags.
+func configureCommandFlags(cmd *cobra.Command, configFile *string, port *int, daemon *bool,
+	testConfig *bool, showVersion *bool, inetdMode *bool, generateKeys *bool) {
+	cmd.Flags().StringVarP(configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
+	cmd.Flags().IntVarP(port, "port", "p", 0, "port number (overrides config)")
+	cmd.Flags().BoolVarP(daemon, "daemon", "D", false, "run in foreground mode")
+	cmd.Flags().BoolVarP(testConfig, "test", "t", false, "test configuration and exit")
+	cmd.Flags().BoolVarP(showVersion, "version", "V", false, "show version information")
+	cmd.Flags().BoolVarP(inetdMode, "inetd", "i", false, "run from inetd/systemd socket activation")
+	cmd.Flags().BoolVarP(generateKeys, "generate-keys", "G", false, "generate host keys and exit")
+}
+
+// runStandardServerMode initializes and runs the SSH server in standard mode.
+func runStandardServerMode(cfg *config.Config) error {
+	listener, err := createGarlicListener()
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	srv, err := createEmbeddedServer(cfg, listener)
+	if err != nil {
+		return err
+	}
+
+	setupServerCleanup(srv)
+	return srv.Start()
+}
+
+// createGarlicListener creates a garlic network listener for I2P connections.
+func createGarlicListener() (net.Listener, error) {
+	garlic, err := onramp.NewGarlic("garlicsshd", "127.0.0.1:7656", onramp.OPT_WIDE)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	listener, err := garlic.Listen()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	return listener, nil
+}
+
+// createEmbeddedServer creates and configures an embedded SSH server instance.
+func createEmbeddedServer(cfg *config.Config, listener net.Listener) (embedded.EmbeddedSSHServer, error) {
+	opts := configToEmbeddedOptions(cfg)
+	opts.Listener = listener
+
+	srv, err := embedded.NewStandardEmbeddedSSHServer(listener, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create server: %w", err)
+	}
+
+	return srv, nil
+}
+
+// setupServerCleanup configures deferred cleanup operations for the server.
+func setupServerCleanup(srv embedded.EmbeddedSSHServer) {
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if stopErr := srv.Stop(ctx); stopErr != nil {
+			fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
+		}
+		srv.Cleanup()
+	}()
 }
 
 // validateAndReportConfig performs comprehensive configuration validation

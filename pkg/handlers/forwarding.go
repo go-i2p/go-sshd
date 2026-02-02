@@ -144,7 +144,19 @@ func (h *ForwardingHandler) isBindAddressAllowed(host string) bool {
 // isTargetHostAllowed checks if connections to the target host are allowed.
 // Implements basic security policy for outbound connections.
 func (h *ForwardingHandler) isTargetHostAllowed(host string) bool {
-	// Block connections to obviously restricted addresses
+	if isRestrictedHost(host) {
+		return false
+	}
+
+	if isLocalhostHost(host) {
+		return true
+	}
+
+	return isAllowedIPOrDomain(host)
+}
+
+// isRestrictedHost checks if the host is on the restricted list.
+func isRestrictedHost(host string) bool {
 	restrictedHosts := []string{
 		"169.254.169.254",          // AWS metadata service
 		"metadata.google.internal", // GCP metadata service
@@ -152,34 +164,24 @@ func (h *ForwardingHandler) isTargetHostAllowed(host string) bool {
 
 	for _, restricted := range restrictedHosts {
 		if host == restricted {
-			return false
+			return true
 		}
 	}
+	return false
+}
 
-	// Allow localhost connections
-	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-		return true
-	}
+// isLocalhostHost checks if the host is a localhost variant.
+func isLocalhostHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1" || host == "localhost"
+}
 
-	// Parse as IP to check for private ranges
+// isAllowedIPOrDomain validates if the host is an allowed IP address or domain.
+func isAllowedIPOrDomain(host string) bool {
 	ip := net.ParseIP(host)
 	if ip != nil {
-		// Allow localhost variants
-		if ip.IsLoopback() {
-			return true
-		}
-		// Allow private networks (could be configurable)
-		if ip.IsPrivate() {
-			return true
-		}
-		// Allow public IPs (could be configurable)
-		return true
+		return ip.IsLoopback() || ip.IsPrivate() || true // Allow public IPs
 	}
 
 	// Allow domain names (basic validation)
-	if len(host) > 0 && len(host) <= 253 {
-		return true
-	}
-
-	return false
+	return len(host) > 0 && len(host) <= 253
 }

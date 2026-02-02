@@ -99,53 +99,61 @@ func (h *SFTPHandler) GetSupportedSubsystems() []string {
 // Following OpenSSH patterns for SFTP security and user isolation.
 // Priority: 1) Configured SFTPRootDir 2) User home directory 3) Fallback to /
 func (h *SFTPHandler) ConfigureChroot(username string) (string, error) {
-	// Check for configured SFTP root directory (highest priority)
-	if h.config != nil && h.config.SFTPRootDir != "" {
-		chrootPath := h.config.SFTPRootDir
-		if stat, err := os.Stat(chrootPath); err != nil {
-			h.logger.Warnf("Configured SFTP root directory %s not accessible: %v", chrootPath, err)
-			// Fall through to home directory lookup
-		} else if !stat.IsDir() {
-			h.logger.Warnf("Configured SFTP root path %s is not a directory", chrootPath)
-			// Fall through to home directory lookup
-		} else {
-			h.logger.Infof("SFTP using configured root directory for user %s: %s", username, chrootPath)
-			return chrootPath, nil
-		}
+	// Try configured root directory first
+	if path, ok := h.tryConfiguredRootDir(username); ok {
+		return path, nil
 	}
 
-	// Get user information to determine home directory
-	userInfo, err := user.Lookup(username)
-	if err != nil {
-		h.logger.Warnf("User lookup failed for %s: %v", username, err)
-		// Fallback to root filesystem for system users or when user lookup fails
-		h.logger.Debugf("SFTP using filesystem root for user %s due to lookup failure", username)
-		return "/", nil
-	}
-
-	// For security, default to user's home directory as chroot
-	// This prevents users from accessing system files outside their home
-	chrootPath := userInfo.HomeDir
-
-	// Verify the directory exists and is accessible
-	if stat, err := os.Stat(chrootPath); err != nil {
-		h.logger.Warnf("User home directory %s not accessible for %s: %v", chrootPath, username, err)
-		// Fallback to root for system compatibility, but log the security implication
-		h.logger.Infof("SFTP fallback to filesystem root for user %s - consider creating home directory", username)
-		return "/", nil
-	} else if !stat.IsDir() {
-		h.logger.Warnf("User home path %s is not a directory for %s", chrootPath, username)
-		return "/", nil
-	}
-
-	// For root user, allow full filesystem access for administrative tasks
+	// Root user gets full access
 	if username == "root" {
 		h.logger.Debugf("SFTP allowing full filesystem access for root user")
 		return "/", nil
 	}
 
+	// Try user home directory
+	return h.getUserHomeChroot(username)
+}
+
+// tryConfiguredRootDir attempts to use the configured SFTP root directory.
+func (h *SFTPHandler) tryConfiguredRootDir(username string) (string, bool) {
+	if h.config == nil || h.config.SFTPRootDir == "" {
+		return "", false
+	}
+
+	chrootPath := h.config.SFTPRootDir
+	if !isValidDirectory(chrootPath) {
+		h.logger.Warnf("Configured SFTP root directory %s not accessible or not a directory", chrootPath)
+		return "", false
+	}
+
+	h.logger.Infof("SFTP using configured root directory for user %s: %s", username, chrootPath)
+	return chrootPath, true
+}
+
+// getUserHomeChroot determines the chroot path based on user's home directory.
+func (h *SFTPHandler) getUserHomeChroot(username string) (string, error) {
+	userInfo, err := user.Lookup(username)
+	if err != nil {
+		h.logger.Warnf("User lookup failed for %s: %v", username, err)
+		h.logger.Debugf("SFTP using filesystem root for user %s due to lookup failure", username)
+		return "/", nil
+	}
+
+	chrootPath := userInfo.HomeDir
+	if !isValidDirectory(chrootPath) {
+		h.logger.Warnf("User home directory %s not accessible for %s", chrootPath, username)
+		h.logger.Infof("SFTP fallback to filesystem root for user %s - consider creating home directory", username)
+		return "/", nil
+	}
+
 	h.logger.Infof("SFTP chroot configured for user %s: %s", username, chrootPath)
 	return chrootPath, nil
+}
+
+// isValidDirectory checks if a path exists and is a directory.
+func isValidDirectory(path string) bool {
+	stat, err := os.Stat(path)
+	return err == nil && stat.IsDir()
 }
 
 // ValidateFileOperation validates file operations based on security policies and configuration.
@@ -312,7 +320,6 @@ func (s *secureSFTPHandlers) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 
 // Filewrite implements sftp.FileWriter - validates and handles file write operations.
 func (s *secureSFTPHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
-	// Check for directory traversal in raw path first
 	if err := s.checkDirectoryTraversal(r.Filepath); err != nil {
 		s.handler.logger.Warnf("SFTP write denied for user %s: directory traversal attempt on %s", s.username, r.Filepath)
 		return nil, err
@@ -320,14 +327,22 @@ func (s *secureSFTPHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 
 	path := s.resolvePath(r.Filepath)
 
-	// Validate the write operation against security policies
 	if err := s.handler.ValidateFileOperation(s.username, path, "write"); err != nil {
 		s.handler.logger.Warnf("SFTP write denied for user %s on %s: %v", s.username, path, err)
 		return nil, err
 	}
 
-	// Determine flags from the request
-	pflags := r.Pflags()
+	flags := buildOpenFileFlags(r.Pflags())
+
+	if err := ensureParentDirectory(path); err != nil {
+		return nil, err
+	}
+
+	return os.OpenFile(path, flags, 0o644)
+}
+
+// buildOpenFileFlags constructs file open flags from SFTP protocol flags.
+func buildOpenFileFlags(pflags sftp.FileOpenFlags) int {
 	flags := os.O_WRONLY
 
 	if pflags.Creat {
@@ -339,32 +354,40 @@ func (s *secureSFTPHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	if pflags.Excl {
 		flags |= os.O_EXCL
 	}
-	// Note: Don't use O_APPEND with WriterAt - they conflict
 
-	// Create parent directory if needed
+	return flags
+}
+
+// ensureParentDirectory creates the parent directory if it doesn't exist.
+func ensureParentDirectory(path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-
-	// Open file for writing - OS permissions still apply
-	file, err := os.OpenFile(path, flags, 0o644)
-	if err != nil {
-		return nil, err
-	}
-
-	return file, nil
+	return os.MkdirAll(dir, 0o755)
 }
 
 // Filecmd implements sftp.FileCmder - validates and handles file commands.
 // Handles: Setstat, Rename, Rmdir, Mkdir, Link, Symlink, Remove
 func (s *secureSFTPHandlers) Filecmd(r *sftp.Request) error {
-	// Check for directory traversal in raw path first
+	if err := s.validateFilecmdPaths(r); err != nil {
+		return err
+	}
+
+	path := s.resolvePath(r.Filepath)
+	operation := strings.ToLower(r.Method)
+
+	if err := s.validateFilecmdOperation(path, r.Target, operation); err != nil {
+		return err
+	}
+
+	return s.executeFilecmd(r.Method, path, r)
+}
+
+// validateFilecmdPaths validates file and target paths for directory traversal.
+func (s *secureSFTPHandlers) validateFilecmdPaths(r *sftp.Request) error {
 	if err := s.checkDirectoryTraversal(r.Filepath); err != nil {
 		s.handler.logger.Warnf("SFTP command denied for user %s: directory traversal attempt on %s", s.username, r.Filepath)
 		return err
 	}
-	// Also check target path for rename/link operations
+
 	if r.Target != "" {
 		if err := s.checkDirectoryTraversal(r.Target); err != nil {
 			s.handler.logger.Warnf("SFTP command denied for user %s: directory traversal attempt on target %s", s.username, r.Target)
@@ -372,28 +395,30 @@ func (s *secureSFTPHandlers) Filecmd(r *sftp.Request) error {
 		}
 	}
 
-	path := s.resolvePath(r.Filepath)
+	return nil
+}
 
-	// Map request method to operation name for validation
-	operation := strings.ToLower(r.Method)
-
-	// Validate the operation against security policies
+// validateFilecmdOperation validates the file operation against security policies.
+func (s *secureSFTPHandlers) validateFilecmdOperation(path, target, operation string) error {
 	if err := s.handler.ValidateFileOperation(s.username, path, operation); err != nil {
 		s.handler.logger.Warnf("SFTP %s denied for user %s on %s: %v", operation, s.username, path, err)
 		return err
 	}
 
-	// For operations with a target (rename, link, symlink), validate target too
-	if r.Target != "" {
-		targetPath := s.resolvePath(r.Target)
+	if target != "" {
+		targetPath := s.resolvePath(target)
 		if err := s.handler.ValidateFileOperation(s.username, targetPath, operation); err != nil {
 			s.handler.logger.Warnf("SFTP %s denied for user %s on target %s: %v", operation, s.username, targetPath, err)
 			return err
 		}
 	}
 
-	// Execute the file command
-	switch r.Method {
+	return nil
+}
+
+// executeFilecmd routes the file command to the appropriate handler.
+func (s *secureSFTPHandlers) executeFilecmd(method, path string, r *sftp.Request) error {
+	switch method {
 	case "Setstat":
 		return s.handleSetstat(path, r)
 	case "Rename":
@@ -409,7 +434,7 @@ func (s *secureSFTPHandlers) Filecmd(r *sftp.Request) error {
 	case "Link":
 		return os.Link(path, s.resolvePath(r.Target))
 	default:
-		return errors.New("unsupported command: " + r.Method)
+		return errors.New("unsupported command: " + method)
 	}
 }
 
@@ -418,38 +443,58 @@ func (s *secureSFTPHandlers) handleSetstat(path string, r *sftp.Request) error {
 	attrs := r.Attributes()
 	attrFlags := r.AttrFlags()
 
-	// Handle permissions change
-	if attrFlags.Permissions {
-		if err := os.Chmod(path, attrs.FileMode()); err != nil {
-			return err
-		}
+	if err := applyPermissionsChange(path, attrs, attrFlags); err != nil {
+		return err
 	}
 
-	// Handle ownership change (requires root)
+	if err := applyOwnershipChange(path, attrs, attrFlags); err != nil {
+		return err
+	}
+
+	if err := applySizeChange(path, attrs, attrFlags); err != nil {
+		return err
+	}
+
+	if err := applyTimeChange(path, attrs, attrFlags); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// applyPermissionsChange updates file permissions if requested.
+func applyPermissionsChange(path string, attrs *sftp.FileStat, attrFlags sftp.FileAttrFlags) error {
+	if attrFlags.Permissions {
+		return os.Chmod(path, attrs.FileMode())
+	}
+	return nil
+}
+
+// applyOwnershipChange updates file ownership if requested (requires root).
+func applyOwnershipChange(path string, attrs *sftp.FileStat, attrFlags sftp.FileAttrFlags) error {
 	if attrFlags.UidGid {
 		uid := int(attrs.UID)
 		gid := int(attrs.GID)
-		if err := os.Chown(path, uid, gid); err != nil {
-			return err
-		}
+		return os.Chown(path, uid, gid)
 	}
+	return nil
+}
 
-	// Handle size change (truncate)
+// applySizeChange truncates the file to the specified size if requested.
+func applySizeChange(path string, attrs *sftp.FileStat, attrFlags sftp.FileAttrFlags) error {
 	if attrFlags.Size {
-		if err := os.Truncate(path, int64(attrs.Size)); err != nil {
-			return err
-		}
+		return os.Truncate(path, int64(attrs.Size))
 	}
+	return nil
+}
 
-	// Handle access/modification time change
+// applyTimeChange updates file access and modification times if requested.
+func applyTimeChange(path string, attrs *sftp.FileStat, attrFlags sftp.FileAttrFlags) error {
 	if attrFlags.Acmodtime {
 		atime := time.Unix(int64(attrs.Atime), 0)
 		mtime := time.Unix(int64(attrs.Mtime), 0)
-		if err := os.Chtimes(path, atime, mtime); err != nil {
-			return err
-		}
+		return os.Chtimes(path, atime, mtime)
 	}
-
 	return nil
 }
 
