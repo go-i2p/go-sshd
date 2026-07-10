@@ -156,10 +156,17 @@ func (h *ForwardingHandler) isTargetHostAllowed(host string) bool {
 }
 
 // isRestrictedHost checks if the host is on the restricted list.
+// Beyond a few well-known cloud metadata hostnames/addresses, this also
+// blocks the entire link-local unicast range (169.254.0.0/16 IPv4,
+// fe80::/10 IPv6), since virtually all cloud metadata services (AWS, GCP,
+// Azure, ECS task metadata, etc.) are exposed only on link-local addresses
+// - enumerating each provider's specific IP would otherwise leave gaps
+// (e.g. ECS task metadata at 169.254.170.2, or Azure's IMDS alias).
 func isRestrictedHost(host string) bool {
 	restrictedHosts := []string{
-		"169.254.169.254",          // AWS metadata service
-		"metadata.google.internal", // GCP metadata service
+		"169.254.169.254",          // AWS/Azure/GCP metadata service (IPv4)
+		"metadata.google.internal", // GCP metadata service (hostname)
+		"fd00:ec2::254",            // AWS IMDSv6 metadata service
 	}
 
 	for _, restricted := range restrictedHosts {
@@ -167,6 +174,11 @@ func isRestrictedHost(host string) bool {
 			return true
 		}
 	}
+
+	if ip := net.ParseIP(host); ip != nil && ip.IsLinkLocalUnicast() {
+		return true
+	}
+
 	return false
 }
 

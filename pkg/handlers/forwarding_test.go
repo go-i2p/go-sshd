@@ -322,6 +322,25 @@ func TestIsTargetHostAllowed(t *testing.T) {
 			host:     "8.8.8.8",
 			expected: false,
 		},
+		{
+			// Regression test: ECS task metadata is served on a link-local
+			// address (169.254.170.2) distinct from the well-known
+			// 169.254.169.254; the old exact-match-only blocklist missed it.
+			name:     "ECS task metadata blocked",
+			host:     "169.254.170.2",
+			expected: false,
+		},
+		{
+			// Regression test: AWS IMDSv6 metadata service.
+			name:     "AWS IMDSv6 metadata blocked",
+			host:     "fd00:ec2::254",
+			expected: false,
+		},
+		{
+			name:     "IPv6 link-local blocked",
+			host:     "fe80::1",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -334,6 +353,34 @@ func TestIsTargetHostAllowed(t *testing.T) {
 
 			result := handler.isTargetHostAllowed(tt.host)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestIsRestrictedHost is a regression test for the metadata/link-local
+// allow-list broadening: beyond the two originally hardcoded addresses,
+// isRestrictedHost must now cover the whole link-local unicast range plus
+// AWS's IPv6 metadata address.
+func TestIsRestrictedHost(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		expected bool
+	}{
+		{name: "AWS/Azure/GCP metadata IPv4", host: "169.254.169.254", expected: true},
+		{name: "GCP metadata hostname", host: "metadata.google.internal", expected: true},
+		{name: "AWS IMDSv6 metadata", host: "fd00:ec2::254", expected: true},
+		{name: "ECS task metadata", host: "169.254.170.2", expected: true},
+		{name: "arbitrary link-local IPv4", host: "169.254.1.1", expected: true},
+		{name: "IPv6 link-local", host: "fe80::1", expected: true},
+		{name: "private IPv4 not restricted", host: "192.168.1.1", expected: false},
+		{name: "loopback not restricted", host: "127.0.0.1", expected: false},
+		{name: "public IP not restricted", host: "8.8.8.8", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isRestrictedHost(tt.host))
 		})
 	}
 }
