@@ -531,12 +531,14 @@ func (s *StandardEmbeddedSSHServer) Start() error {
 		return fmt.Errorf("server not configured")
 	}
 	s.started = true
+	sshServer := s.ssh
+	listener := s.listener
 	s.mu.Unlock()
 
-	s.logger.Infof("Starting embedded SSH server on %s", s.listener.Addr())
+	s.logger.Infof("Starting embedded SSH server on %s", listener.Addr())
 
 	// Use the provided listener instead of creating a new one
-	return s.ssh.Serve(s.listener)
+	return sshServer.Serve(listener)
 }
 
 // Stop initiates graceful shutdown with context timeout.
