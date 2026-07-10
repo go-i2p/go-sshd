@@ -3,8 +3,10 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/gliderlabs/ssh"
 	"github.com/sirupsen/logrus"
@@ -188,12 +190,50 @@ func isLocalhostHost(host string) bool {
 }
 
 // isAllowedIPOrDomain validates if the host is an allowed IP address or domain.
+// For IP addresses, checks if they are loopback or private.
+// For domain names, performs DNS resolution and validates all resolved addresses.
 func isAllowedIPOrDomain(host string) bool {
 	ip := net.ParseIP(host)
 	if ip != nil {
+		// Already an IP address
 		return ip.IsLoopback() || ip.IsPrivate()
 	}
 
-	// Allow domain names (basic validation)
-	return len(host) > 0 && len(host) <= 253
+	// Host is a domain name; resolve it and check all resolved addresses
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, network, address)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ips, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		// DNS resolution failed; deny the request
+		return false
+	}
+
+	if len(ips) == 0 {
+		// No IPs resolved; deny the request
+		return false
+	}
+
+	// Check that all resolved IPs are allowed (loopback or private)
+	for _, ipAddr := range ips {
+		// Verify this resolved IP is not restricted
+		if isRestrictedHost(ipAddr.String()) {
+			return false
+		}
+
+		// Verify this resolved IP is allowed (loopback or private)
+		if !ipAddr.IP.IsLoopback() && !ipAddr.IP.IsPrivate() {
+			return false
+		}
+	}
+
+	return true
 }

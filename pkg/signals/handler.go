@@ -1,5 +1,4 @@
-// Package signals provides Unix signal handling for graceful shutdown and configuration reload.package signals
-
+// Package signals provides Unix signal handling for graceful shutdown and configuration reload.
 // This package follows Go best practices using context cancellation for clean server lifecycle management.
 package signals
 

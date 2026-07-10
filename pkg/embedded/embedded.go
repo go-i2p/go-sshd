@@ -57,6 +57,10 @@ type ConfigOptions struct {
 	// Forwarding configures port forwarding and agent forwarding.
 	// If nil, uses DefaultForwardingConfig().
 	Forwarding *ForwardingConfig
+
+	// Metrics configures Prometheus metrics and health check endpoints.
+	// If nil or Metrics.Enabled is false, no metrics server is started.
+	Metrics *MetricsConfig
 }
 
 // HostKeyConfig specifies host key sources for the SSH server.
@@ -223,6 +227,18 @@ type ForwardingConfig struct {
 	GatewayPorts bool
 }
 
+// MetricsConfig specifies Prometheus metrics and health check configuration.
+type MetricsConfig struct {
+	// Enabled controls whether to start the metrics server.
+	// Default: false
+	Enabled bool
+
+	// Address specifies the HTTP address to bind metrics server to (e.g., "127.0.0.1:9100").
+	// If empty, defaults to "127.0.0.1:9100".
+	// Default: "127.0.0.1:9100"
+	Address string
+}
+
 // DefaultConfigOptions returns ConfigOptions with sensible defaults.
 // Listener must be provided by caller before use.
 func DefaultConfigOptions() ConfigOptions {
@@ -235,6 +251,7 @@ func DefaultConfigOptions() ConfigOptions {
 		Session:        DefaultSessionConfig(),
 		Logging:        DefaultLoggingConfig(),
 		Forwarding:     DefaultForwardingConfig(),
+		Metrics:        DefaultMetricsConfig(),
 	}
 }
 
@@ -281,5 +298,13 @@ func DefaultForwardingConfig() *ForwardingConfig {
 		X11DisplayOffset:     10,
 		X11UseLocalhost:      true,
 		GatewayPorts:         false,
+	}
+}
+
+// DefaultMetricsConfig returns metrics config with sensible defaults.
+func DefaultMetricsConfig() *MetricsConfig {
+	return &MetricsConfig{
+		Enabled: false,
+		Address: "127.0.0.1:9100",
 	}
 }

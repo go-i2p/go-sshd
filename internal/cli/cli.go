@@ -17,6 +17,8 @@ import (
 	"github.com/go-i2p/go-sshd/pkg/config"
 	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/embedded"
+	"github.com/go-i2p/go-sshd/pkg/logging"
+	"github.com/go-i2p/go-sshd/pkg/metrics"
 	"github.com/go-i2p/go-sshd/pkg/server"
 	"github.com/go-i2p/go-sshd/pkg/signals"
 )
@@ -127,6 +129,31 @@ func runStandardServerMode(configFile string, cfg *config.Config, createListener
 	if err != nil {
 		return err
 	}
+
+	// Create a logger for the metrics server
+	logger, err := logging.NewLogger(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create logger for metrics: %w", err)
+	}
+
+	// Create and optionally start the metrics server
+	var metricsServer *metrics.Server
+	if cfg.MetricsEnabled && cfg.MetricsAddress != "" {
+		collector := metrics.NewCollector(logger.Logger)
+		metricsServer = metrics.NewServer(collector, cfg.MetricsAddress, logger)
+		if err := metricsServer.Start(); err != nil {
+			return fmt.Errorf("failed to start metrics server: %w", err)
+		}
+	}
+
+	// Cleanup metrics server on exit
+	defer func() {
+		if metricsServer != nil {
+			if err := metricsServer.Stop(); err != nil {
+				fmt.Fprintf(os.Stderr, "error stopping metrics server: %v\n", err)
+			}
+		}
+	}()
 
 	// Create a signal handler for graceful shutdown and configuration reload.
 	handler := signals.NewHandler()
@@ -382,6 +409,10 @@ func configToEmbeddedOptions(cfg *config.Config) embedded.ConfigOptions {
 			X11DisplayOffset:     cfg.X11DisplayOffset,
 			X11UseLocalhost:      cfg.X11UseLocalhost,
 			GatewayPorts:         cfg.GatewayPorts,
+		},
+		Metrics: &embedded.MetricsConfig{
+			Enabled: cfg.MetricsEnabled,
+			Address: cfg.MetricsAddress,
 		},
 	}
 }
