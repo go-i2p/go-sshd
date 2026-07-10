@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -408,7 +409,12 @@ func (c *fakeGosshConn) SendRequest(name string, wantReply bool, payload []byte)
 	return false, nil, nil
 }
 func (c *fakeGosshConn) OpenChannel(name string, data []byte) (gossh.Channel, <-chan *gossh.Request, error) {
-	return nil, nil, nil
+	// Returning an error here (rather than a nil Channel) matches how
+	// ssh.ForwardAgentConnections' internal goroutine bails out
+	// (agent.go: "if err != nil { return }") instead of dereferencing a nil
+	// gossh.Channel, which is all this test fake needs to support: proving
+	// the per-session Unix socket is live and connectable.
+	return nil, nil, errors.New("fakeGosshConn does not support opening channels")
 }
 func (c *fakeGosshConn) Close() error { return nil }
 func (c *fakeGosshConn) Wait() error  { return nil }
