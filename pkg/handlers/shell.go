@@ -89,7 +89,7 @@ func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.
 		cmd = exec.Command(shell, "-l") // Login shell
 	}
 
-	cmd.Env = h.buildEnvironment(s, ptyReq.Term)
+	cmd.Env = h.buildEnvironment(s, shell, ptyReq.Term)
 
 	// Connect session I/O directly to shell process
 	// gliderlabs/ssh handles PTY setup automatically
@@ -101,6 +101,15 @@ func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 		Pgid:    0,
+	}
+
+	// Drop privileges to the authenticated user before spawning the shell -
+	// without this, every session runs with the daemon's own (often root)
+	// identity regardless of which system account authenticated.
+	if err := h.applyUserCredential(cmd, user); err != nil {
+		h.logger.Errorf("Failed to drop privileges for user %s: %v", user, err)
+		s.Exit(1)
+		return
 	}
 
 	// Start the shell process
@@ -141,7 +150,7 @@ func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string, keyOpts 
 	cmd := exec.Command(shell, "-c", commandToRun)
 
 	// Build environment, adding SSH_ORIGINAL_COMMAND if there's a forced command
-	env := h.buildEnvironment(s, "")
+	env := h.buildEnvironment(s, shell, "")
 	if keyOpts != nil && keyOpts.Command != "" && s.RawCommand() != "" {
 		env = append(env, fmt.Sprintf("SSH_ORIGINAL_COMMAND=%s", s.RawCommand()))
 	}
@@ -151,6 +160,15 @@ func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string, keyOpts 
 	cmd.Stdin = s
 	cmd.Stdout = s
 	cmd.Stderr = s
+
+	// Drop privileges to the authenticated user before spawning the command -
+	// without this, every session runs with the daemon's own (often root)
+	// identity regardless of which system account authenticated.
+	if err := h.applyUserCredential(cmd, user); err != nil {
+		h.logger.Errorf("Failed to drop privileges for user %s: %v", user, err)
+		s.Exit(1)
+		return
+	}
 
 	// Execute and wait for completion
 	if err := cmd.Start(); err != nil {
@@ -195,6 +213,29 @@ func (h *ShellHandler) waitForShellCompletion(s ssh.Session, cmd *exec.Cmd, user
 		h.logger.Debugf("Shell for user %s completed successfully", user)
 		s.Exit(0)
 	}
+}
+
+// applyUserCredential drops the daemon's own privileges to the
+// authenticated user before cmd is started, so the spawned shell or forced
+// command runs as that user rather than as the daemon (normally root, per
+// systemd/sshd-go.service). When the daemon is not running as root (e.g.
+// local development or tests), this is a no-op, matching os/exec's default
+// behavior of inheriting the caller's own identity.
+func (h *ShellHandler) applyUserCredential(cmd *exec.Cmd, username string) error {
+	if !canDropPrivileges() {
+		return nil
+	}
+
+	cred, err := lookupUserCredential(username)
+	if err != nil {
+		return fmt.Errorf("resolve credential for user %s: %w", username, err)
+	}
+
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Credential = execCredential(cred)
+	return nil
 }
 
 // getUserShell gets the user's default shell from the system.
@@ -278,19 +319,40 @@ func parsePasswdLineForUID(line, uid string) (string, bool) {
 	return shell, true
 }
 
-// buildEnvironment creates environment variables for the shell session.
-// Integrates SSH session context with standard Unix environment setup.
-func (h *ShellHandler) buildEnvironment(s ssh.Session, term string) []string {
-	env := os.Environ()
+// defaultSessionPath is the fallback PATH assigned to spawned sessions,
+// matching typical OpenSSH/login.conf defaults.
+const defaultSessionPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-	// Add SSH-specific environment variables for OpenSSH compatibility
-	env = append(
-		env,
-		fmt.Sprintf("SSH_CLIENT=%s", s.RemoteAddr()),
-		fmt.Sprintf("SSH_CONNECTION=%s %s", s.RemoteAddr(), s.LocalAddr()),
-		fmt.Sprintf("USER=%s", s.User()),
-		fmt.Sprintf("LOGNAME=%s", s.User()),
-	)
+// buildEnvironment creates a minimal, explicit environment for the shell
+// session instead of inheriting the daemon's own process environment.
+// Forwarding the daemon's environment verbatim (as os.Environ() would)
+// leaks anything injected into the daemon process - including operator
+// secrets set via systemd's EnvironmentFile= (see systemd/sshd-go.default)
+// - to every authenticated user regardless of that user's own privilege
+// level. Real OpenSSH never forwards its own environment to sessions; it
+// only forwards client-requested variables that appear in AcceptEnv.
+func (h *ShellHandler) buildEnvironment(s ssh.Session, shell, term string) []string {
+	homeDir := ""
+	if u, err := user.Lookup(s.User()); err == nil {
+		homeDir = u.HomeDir
+	}
+
+	return buildSessionEnvironment(s.User(), shell, term, homeDir, s.RemoteAddr().String(), s.LocalAddr().String())
+}
+
+// buildSessionEnvironment is the pure, session-independent core of
+// buildEnvironment. It is kept separate from ssh.Session so the "no
+// inherited daemon environment" contract can be unit tested without a full
+// ssh.Session mock.
+func buildSessionEnvironment(username, shell, term, homeDir, remoteAddr, localAddr string) []string {
+	env := []string{
+		fmt.Sprintf("PATH=%s", defaultSessionPath),
+		fmt.Sprintf("SHELL=%s", shell),
+		fmt.Sprintf("USER=%s", username),
+		fmt.Sprintf("LOGNAME=%s", username),
+		fmt.Sprintf("SSH_CLIENT=%s", remoteAddr),
+		fmt.Sprintf("SSH_CONNECTION=%s %s", remoteAddr, localAddr),
+	}
 
 	// Add terminal type if PTY session
 	if term != "" {
@@ -298,8 +360,8 @@ func (h *ShellHandler) buildEnvironment(s ssh.Session, term string) []string {
 	}
 
 	// Set HOME directory for user
-	if u, err := user.Lookup(s.User()); err == nil {
-		env = append(env, fmt.Sprintf("HOME=%s", u.HomeDir))
+	if homeDir != "" {
+		env = append(env, fmt.Sprintf("HOME=%s", homeDir))
 	}
 
 	return env

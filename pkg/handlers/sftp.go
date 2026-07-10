@@ -59,8 +59,14 @@ func (h *SFTPHandler) CreateSubsystemHandler() ssh.SubsystemHandler {
 		server := sftp.NewRequestServer(s, secureHandlers.Handlers(),
 			sftp.WithStartDirectory(workingDir))
 
-		// Serve SFTP requests - all operations go through our secure handlers
-		if err := server.Serve(); err != nil {
+		// Serve SFTP requests - all operations go through our secure handlers.
+		// Drop the daemon's own privileges (normally root) to the
+		// authenticated user for the whole session, so file operations are
+		// subject to the real filesystem permission checks for that user
+		// rather than bypassing them as root. When the daemon is not
+		// running as root, this is a no-op.
+		err = h.serveWithUserPrivileges(user, server.Serve)
+		if err != nil {
 			if err != io.EOF {
 				h.logger.Errorf("SFTP server error for user %s: %v", user, err)
 			}
@@ -68,6 +74,26 @@ func (h *SFTPHandler) CreateSubsystemHandler() ssh.SubsystemHandler {
 			h.logger.Infof("SFTP subsystem completed for user %s", user)
 		}
 	}
+}
+
+// serveWithUserPrivileges resolves username's credential and runs serve
+// under that user's privileges via withDroppedPrivileges. If the daemon is
+// not running as root, or the user cannot be resolved, serve still runs
+// but under the daemon's own identity (matching prior behavior) - the
+// latter is logged since it means chroot/permission confinement is the
+// only remaining protection for that session.
+func (h *SFTPHandler) serveWithUserPrivileges(username string, serve func() error) error {
+	if !canDropPrivileges() {
+		return serve()
+	}
+
+	cred, err := lookupUserCredential(username)
+	if err != nil {
+		h.logger.Warnf("Cannot resolve credential for SFTP user %s, serving as daemon identity: %v", username, err)
+		return serve()
+	}
+
+	return withDroppedPrivileges(cred, serve)
 }
 
 // buildServerOptions creates SFTP server options based on configuration and user context.

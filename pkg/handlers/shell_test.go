@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -112,6 +113,48 @@ testuser:x:1000:1000:Test User:/home/testuser:/bin/zsh
 	shell, err := scanPasswdForUID(file, "1000")
 	require.NoError(t, err)
 	assert.Equal(t, "/bin/zsh", shell)
+}
+
+// TestBuildSessionEnvironmentDoesNotLeakDaemonEnvironment is a regression
+// test for CRIT-2: the daemon's own process environment (which may contain
+// operator secrets injected via systemd's EnvironmentFile=) must never be
+// forwarded into an authenticated user's session.
+func TestBuildSessionEnvironmentDoesNotLeakDaemonEnvironment(t *testing.T) {
+	const sentinelKey = "GO_SSHD_TEST_SECRET_SENTINEL"
+	t.Setenv(sentinelKey, "super-secret-value")
+
+	env := buildSessionEnvironment("alice", "/bin/bash", "xterm", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
+
+	for _, kv := range env {
+		assert.NotContains(t, kv, sentinelKey, "session environment must not inherit the daemon's own process environment")
+	}
+}
+
+// TestBuildSessionEnvironmentSetsExpectedVars verifies the explicit,
+// minimal environment contains exactly the variables a session needs.
+func TestBuildSessionEnvironmentSetsExpectedVars(t *testing.T) {
+	env := buildSessionEnvironment("alice", "/bin/zsh", "xterm-256color", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
+
+	assert.Contains(t, env, "PATH="+defaultSessionPath)
+	assert.Contains(t, env, "SHELL=/bin/zsh")
+	assert.Contains(t, env, "USER=alice")
+	assert.Contains(t, env, "LOGNAME=alice")
+	assert.Contains(t, env, "HOME=/home/alice")
+	assert.Contains(t, env, "TERM=xterm-256color")
+	assert.Contains(t, env, "SSH_CLIENT=1.2.3.4:22")
+	assert.Contains(t, env, "SSH_CONNECTION=1.2.3.4:22 5.6.7.8:22")
+}
+
+// TestBuildSessionEnvironmentOmitsEmptyOptionalFields verifies TERM/HOME are
+// omitted rather than emitted empty when not applicable (e.g. non-PTY
+// sessions or unresolvable users).
+func TestBuildSessionEnvironmentOmitsEmptyOptionalFields(t *testing.T) {
+	env := buildSessionEnvironment("alice", "/bin/sh", "", "", "1.2.3.4:22", "5.6.7.8:22")
+
+	for _, kv := range env {
+		assert.False(t, strings.HasPrefix(kv, "TERM="), "TERM should be omitted for non-PTY sessions")
+		assert.False(t, strings.HasPrefix(kv, "HOME="), "HOME should be omitted when unresolvable")
+	}
 }
 
 // TestScanPasswdForUID_EmptyShellDefaultsToBash verifies that a passwd entry
