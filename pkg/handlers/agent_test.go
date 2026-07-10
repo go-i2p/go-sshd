@@ -355,6 +355,21 @@ func TestAgentHandlerErrorCases(t *testing.T) {
 	})
 }
 
+// TestCreateAgentRequestHandler_NilLoggerDoesNotPanic is a regression test
+// for the nil-logger panic risk: AgentHandler's logging call sites must be
+// nil-safe, matching the convention used by X11Handler and SFTPHandler.
+func TestCreateAgentRequestHandler_NilLoggerDoesNotPanic(t *testing.T) {
+	handler := NewAgentHandler(&config.Config{AllowAgentForwarding: true}, nil)
+	requestHandler := handler.CreateAgentRequestHandler()
+
+	ctx := &agentMockContext{user: "testuser"}
+	req := &gossh.Request{Type: "auth-agent-req@openssh.com", WantReply: true}
+
+	assert.NotPanics(t, func() {
+		requestHandler(ctx, nil, req)
+	})
+}
+
 // agentMockContext implements ssh.Context for testing agent functionality.
 type agentMockContext struct {
 	context.Context

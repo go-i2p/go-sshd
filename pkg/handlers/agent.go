@@ -31,16 +31,25 @@ func NewAgentHandler(cfg *config.Config, logger *logrus.Logger) *AgentHandler {
 	}
 }
 
+// logf logs at the given level if a logger is configured, matching the
+// nil-safe logging convention used by the other handlers in this package.
+func (h *AgentHandler) logf(level logrus.Level, format string, args ...interface{}) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Logf(level, format, args...)
+}
+
 // CreateAgentForwardingHandler creates an SSH agent forwarding channel handler.
 // This handler processes auth-agent@openssh.com channel requests following OpenSSH protocol.
 func (h *AgentHandler) CreateAgentForwardingHandler() ssh.ChannelHandler {
 	return func(srv *ssh.Server, conn *gossh.ServerConn, newCh gossh.NewChannel, ctx ssh.Context) {
 		user := ctx.User()
-		h.logger.Infof("Agent forwarding channel request from user %s", user)
+		h.logf(logrus.InfoLevel, "Agent forwarding channel request from user %s", user)
 
 		// Check if agent forwarding is allowed by configuration
 		if !h.isAgentForwardingAllowed(ctx) {
-			h.logger.Warnf("Agent forwarding denied for user %s", user)
+			h.logf(logrus.WarnLevel, "Agent forwarding denied for user %s", user)
 			_ = newCh.Reject(gossh.Prohibited, "agent forwarding disabled")
 			return
 		}
@@ -48,16 +57,16 @@ func (h *AgentHandler) CreateAgentForwardingHandler() ssh.ChannelHandler {
 		// Accept the channel
 		channel, requests, err := newCh.Accept()
 		if err != nil {
-			h.logger.Errorf("Failed to accept agent forwarding channel for user %s: %v", user, err)
+			h.logf(logrus.ErrorLevel, "Failed to accept agent forwarding channel for user %s: %v", user, err)
 			return
 		}
 
-		h.logger.Infof("Agent forwarding channel established for user %s", user)
+		h.logf(logrus.InfoLevel, "Agent forwarding channel established for user %s", user)
 
 		// Connect to local SSH agent
 		agentConn, err := h.connectToLocalAgent()
 		if err != nil {
-			h.logger.Errorf("Failed to connect to local SSH agent for user %s: %v", user, err)
+			h.logf(logrus.ErrorLevel, "Failed to connect to local SSH agent for user %s: %v", user, err)
 			_ = channel.Close()
 			return
 		}
@@ -118,7 +127,7 @@ func (h *AgentHandler) handleAgentChannel(channel gossh.Channel, agentConn net.C
 	defer channel.Close()
 	defer agentConn.Close()
 
-	h.logger.Debugf("Starting agent forwarding proxy for user %s", user)
+	h.logf(logrus.DebugLevel, "Starting agent forwarding proxy for user %s", user)
 
 	// Create error channel to handle goroutine completion
 	done := make(chan error, 2)
@@ -138,23 +147,23 @@ func (h *AgentHandler) handleAgentChannel(channel gossh.Channel, agentConn net.C
 	// Wait for either direction to complete or error
 	err := <-done
 	if err != nil {
-		h.logger.Debugf("Agent forwarding ended for user %s: %v", user, err)
+		h.logf(logrus.DebugLevel, "Agent forwarding ended for user %s: %v", user, err)
 	} else {
-		h.logger.Debugf("Agent forwarding completed for user %s", user)
+		h.logf(logrus.DebugLevel, "Agent forwarding completed for user %s", user)
 	}
 }
 
 // copyData copies data between two connections with logging.
 // Uses standard io.Copy pattern for efficient data transfer.
 func (h *AgentHandler) copyData(dst, src io.ReadWriter, direction, user string) (int64, error) {
-	h.logger.Debugf("Starting data copy %s for user %s", direction, user)
+	h.logf(logrus.DebugLevel, "Starting data copy %s for user %s", direction, user)
 
 	// Use io.Copy for efficient data transfer
 	n, err := io.Copy(dst, src)
 	if err != nil {
-		h.logger.Debugf("Data copy %s for user %s ended with error: %v", direction, user, err)
+		h.logf(logrus.DebugLevel, "Data copy %s for user %s ended with error: %v", direction, user, err)
 	} else {
-		h.logger.Debugf("Data copy %s for user %s completed, transferred %d bytes", direction, user, n)
+		h.logf(logrus.DebugLevel, "Data copy %s for user %s completed, transferred %d bytes", direction, user, n)
 	}
 
 	return n, err
@@ -165,15 +174,15 @@ func (h *AgentHandler) copyData(dst, src io.ReadWriter, direction, user string) 
 func (h *AgentHandler) CreateAgentRequestHandler() ssh.RequestHandler {
 	return func(ctx ssh.Context, srv *ssh.Server, req *gossh.Request) (bool, []byte) {
 		user := ctx.User()
-		h.logger.Infof("Agent forwarding request from user %s", user)
+		h.logf(logrus.InfoLevel, "Agent forwarding request from user %s", user)
 
 		// Check if agent forwarding is allowed
 		if !h.isAgentForwardingAllowed(ctx) {
-			h.logger.Warnf("Agent forwarding request denied for user %s", user)
+			h.logf(logrus.WarnLevel, "Agent forwarding request denied for user %s", user)
 			return false, nil
 		}
 
-		h.logger.Infof("Agent forwarding request approved for user %s", user)
+		h.logf(logrus.InfoLevel, "Agent forwarding request approved for user %s", user)
 		return true, nil
 	}
 }
