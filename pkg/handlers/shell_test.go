@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"os"
 	"os/user"
+	"path/filepath"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // currentUserNameForShellTest returns the current user's username.
@@ -88,6 +91,82 @@ func TestGetShellFromPasswd(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
+}
+
+// TestScanPasswdForUID tests the passwd-file scanning logic directly against
+// a crafted temp file, independent of the real system /etc/passwd.
+func TestScanPasswdForUID(t *testing.T) {
+	content := `# a comment line
+
+root:x:0:0:root:/root:/bin/bash
+nologinuser:x:100:100:No Shell:/home/nologinuser:
+testuser:x:1000:1000:Test User:/home/testuser:/bin/zsh
+`
+	path := filepath.Join(t.TempDir(), "passwd")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+
+	shell, err := scanPasswdForUID(file, "1000")
+	require.NoError(t, err)
+	assert.Equal(t, "/bin/zsh", shell)
+}
+
+// TestScanPasswdForUID_EmptyShellDefaultsToBash verifies that a passwd entry
+// with an empty shell field falls back to /bin/bash.
+func TestScanPasswdForUID_EmptyShellDefaultsToBash(t *testing.T) {
+	content := "nologinuser:x:100:100:No Shell:/home/nologinuser:\n"
+	path := filepath.Join(t.TempDir(), "passwd")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+
+	shell, err := scanPasswdForUID(file, "100")
+	require.NoError(t, err)
+	assert.Equal(t, "/bin/bash", shell)
+}
+
+// TestScanPasswdForUID_NotFound verifies the not-found error path.
+func TestScanPasswdForUID_NotFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "passwd")
+	require.NoError(t, os.WriteFile(path, []byte("root:x:0:0:root:/root:/bin/bash\n"), 0o644))
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+
+	_, err = scanPasswdForUID(file, "42")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// TestShouldSkipPasswdLine tests comment/blank line detection.
+func TestShouldSkipPasswdLine(t *testing.T) {
+	assert.True(t, shouldSkipPasswdLine(""))
+	assert.True(t, shouldSkipPasswdLine("# a comment"))
+	assert.False(t, shouldSkipPasswdLine("root:x:0:0:root:/root:/bin/bash"))
+}
+
+// TestParsePasswdLineForUID tests direct line parsing, including the
+// empty-shell-defaults-to-bash and non-matching-UID branches.
+func TestParsePasswdLineForUID(t *testing.T) {
+	shell, found := parsePasswdLineForUID("root:x:0:0:root:/root:/bin/bash", "0")
+	assert.True(t, found)
+	assert.Equal(t, "/bin/bash", shell)
+
+	_, found = parsePasswdLineForUID("root:x:0:0:root:/root:/bin/bash", "1")
+	assert.False(t, found)
+
+	_, found = parsePasswdLineForUID("malformed:line", "0")
+	assert.False(t, found)
+
+	shell, found = parsePasswdLineForUID("svc:x:5:5:Service::", "5")
+	assert.True(t, found)
+	assert.Equal(t, "/bin/bash", shell)
 }
 
 func BenchmarkCreateSessionHandler(b *testing.B) {
