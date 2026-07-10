@@ -1,6 +1,12 @@
 // Package network provides network interface patterns and utilities.
 // This package demonstrates the correct use of Go network interface types
 // as specified in the project's network interface patterns guidelines.
+//
+// NOTE: This is a reference/style-guide package, not part of the server's
+// runtime data path. Its exported types (ConnectionHandler, PacketHandler,
+// ListenerHandler) are illustrative examples of correct vs. incorrect
+// interface usage (see BadConnectionHandler and similar) and are not wired
+// into cmd/, pkg/server, pkg/embedded, or pkg/handlers.
 package network
 
 import (
