@@ -44,6 +44,10 @@ func NewHostKeyManager(paths []string) *HostKeyManager {
 // LoadOrGenerateKeys loads each configured host key file, generating and
 // persisting a new key (type inferred from the file name, defaulting to
 // Ed25519) when the file does not already exist. Empty paths are skipped.
+// If no non-empty paths are configured at all, a single ephemeral Ed25519
+// key is generated in memory (not persisted to disk), so callers that need
+// a host key without a filesystem dependency (e.g. tests, embedded servers
+// with no configured path) still get a usable Signer.
 func (m *HostKeyManager) LoadOrGenerateKeys() ([]ssh.Signer, error) {
 	var signers []ssh.Signer
 	for _, path := range m.paths {
@@ -57,7 +61,27 @@ func (m *HostKeyManager) LoadOrGenerateKeys() ([]ssh.Signer, error) {
 		}
 		signers = append(signers, signer)
 	}
+
+	if len(signers) == 0 {
+		signer, err := generateEphemeralKey("")
+		if err != nil {
+			return nil, fmt.Errorf("generate ephemeral host key: %w", err)
+		}
+		signers = append(signers, signer)
+	}
+
 	return signers, nil
+}
+
+// generateEphemeralKey generates a new private key of the requested type
+// (see generatePrivateKey) and wraps it as a Signer without writing it to
+// disk.
+func generateEphemeralKey(keyType string) (ssh.Signer, error) {
+	priv, err := generatePrivateKey(keyType)
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+	return ssh.NewSignerFromKey(priv)
 }
 
 // loadOrGenerateKey loads an existing private key file, or generates and
