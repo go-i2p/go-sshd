@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,6 +259,83 @@ func TestCreateAgentForwardingHandler(t *testing.T) {
 	// This test verifies that the handler can be created successfully.
 }
 
+// mockGosshChannel wraps a net.Conn (e.g. one side of a net.Pipe) to satisfy
+// the gossh.Channel interface, so handleAgentChannel can be exercised with a
+// real, concurrently-readable/writable connection instead of a hand-rolled
+// buffer mock.
+type mockGosshChannel struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *mockGosshChannel) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+func (c *mockGosshChannel) CloseWrite() error { return nil }
+
+func (c *mockGosshChannel) SendRequest(name string, wantReply bool, payload []byte) (bool, error) {
+	return false, nil
+}
+
+func (c *mockGosshChannel) Stderr() io.ReadWriter { return nil }
+
+// TestHandleAgentChannel_FullDuplexForwarding is a regression test for the
+// premature-close bug: CreateAgentForwardingHandler used to defer-close the
+// channel and agent connection in the outer closure, right after launching
+// handleAgentChannel's copy goroutines, tearing down both connections before
+// any data could be forwarded. This test exercises handleAgentChannel
+// directly and proves bytes flow in both directions, and that the
+// connections are only closed once forwarding actually ends.
+func TestHandleAgentChannel_FullDuplexForwarding(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	handler := NewAgentHandler(&config.Config{}, logger)
+
+	// channelConn/channelPeer simulates the SSH channel side of the proxy;
+	// agentConn/agentPeer simulates the local SSH agent socket side.
+	channelConn, channelPeer := net.Pipe()
+	agentConn, agentPeer := net.Pipe()
+	channel := &mockGosshChannel{Conn: channelConn}
+
+	done := make(chan struct{})
+	go func() {
+		handler.handleAgentChannel(channel, agentConn, "testuser")
+		close(done)
+	}()
+
+	// Client -> agent: bytes written on the channel peer must reach the
+	// agent peer.
+	clientMsg := []byte("client->agent request")
+	go func() { _, _ = channelPeer.Write(clientMsg) }()
+	gotFromClient := make([]byte, len(clientMsg))
+	_, err := io.ReadFull(agentPeer, gotFromClient)
+	require.NoError(t, err)
+	assert.Equal(t, clientMsg, gotFromClient)
+
+	// Agent -> client: bytes written on the agent peer must reach the
+	// channel peer.
+	agentMsg := []byte("agent->client response")
+	go func() { _, _ = agentPeer.Write(agentMsg) }()
+	gotFromAgent := make([]byte, len(agentMsg))
+	_, err = io.ReadFull(channelPeer, gotFromAgent)
+	require.NoError(t, err)
+	assert.Equal(t, agentMsg, gotFromAgent)
+
+	// Closing one peer ends the copy loop; handleAgentChannel must then
+	// close both the channel and the agent connection itself.
+	_ = channelPeer.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleAgentChannel did not return after peer closed")
+	}
+
+	assert.True(t, channel.closed.Load(), "handleAgentChannel must close the channel when forwarding ends")
+}
+
 // TestAgentHandlerErrorCases tests various error conditions.
 func TestAgentHandlerErrorCases(t *testing.T) {
 	logger := logrus.New()
@@ -289,7 +367,7 @@ func (m *agentMockContext) User() string          { return m.user }
 func (m *agentMockContext) SessionID() string     { return "test-session" }
 func (m *agentMockContext) ClientVersion() string { return "test-client" }
 func (m *agentMockContext) ServerVersion() string { return "test-server" }
-func (m *agentMockContext) RemoteAddr() net.Addr { return &agentMockAddr{addr: "127.0.0.1:12345"} }
+func (m *agentMockContext) RemoteAddr() net.Addr  { return &agentMockAddr{addr: "127.0.0.1:12345"} }
 
 func (m *agentMockContext) LocalAddr() net.Addr                     { return &agentMockAddr{addr: "127.0.0.1:22"} }
 func (m *agentMockContext) Permissions() *ssh.Permissions           { return m.permissions }

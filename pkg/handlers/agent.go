@@ -51,7 +51,6 @@ func (h *AgentHandler) CreateAgentForwardingHandler() ssh.ChannelHandler {
 			h.logger.Errorf("Failed to accept agent forwarding channel for user %s: %v", user, err)
 			return
 		}
-		defer channel.Close()
 
 		h.logger.Infof("Agent forwarding channel established for user %s", user)
 
@@ -59,11 +58,14 @@ func (h *AgentHandler) CreateAgentForwardingHandler() ssh.ChannelHandler {
 		agentConn, err := h.connectToLocalAgent()
 		if err != nil {
 			h.logger.Errorf("Failed to connect to local SSH agent for user %s: %v", user, err)
+			_ = channel.Close()
 			return
 		}
-		defer agentConn.Close()
 
-		// Handle channel in background
+		// Handle channel in background. handleAgentChannel owns the lifetime of
+		// both channel and agentConn and closes them itself once forwarding
+		// completes - closing them here would race with (and break) the copy
+		// goroutines it starts.
 		go h.handleAgentChannel(channel, agentConn, user)
 
 		// Discard requests on this channel (agent channels don't typically have requests)
@@ -111,7 +113,11 @@ func (h *AgentHandler) connectToLocalAgent() (net.Conn, error) {
 
 // handleAgentChannel handles bidirectional communication between SSH channel and local agent.
 // This function copies data between the SSH channel and agent connection using standard Go patterns.
+// It owns the lifetime of both channel and agentConn and closes them when forwarding ends.
 func (h *AgentHandler) handleAgentChannel(channel gossh.Channel, agentConn net.Conn, user string) {
+	defer channel.Close()
+	defer agentConn.Close()
+
 	h.logger.Debugf("Starting agent forwarding proxy for user %s", user)
 
 	// Create error channel to handle goroutine completion

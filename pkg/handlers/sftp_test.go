@@ -232,23 +232,47 @@ func TestSecureSFTPHandlers_ResolvePath(t *testing.T) {
 	secureHandlers := newSecureSFTPHandlers(handler, "testuser", "/home/testuser")
 
 	tests := []struct {
-		name     string
-		input    string
-		expected string
+		name        string
+		input       string
+		expected    string
+		expectError bool
 	}{
-		{"absolute path stays absolute", "/tmp/file.txt", "/tmp/file.txt"},
-		{"relative path resolves to working dir", "file.txt", "/home/testuser/file.txt"},
-		{"relative subdir resolves correctly", "subdir/file.txt", "/home/testuser/subdir/file.txt"},
-		{"path with dots is cleaned", "./file.txt", "/home/testuser/file.txt"},
-		{"path with parent traversal is cleaned", "../file.txt", "/home/file.txt"},
+		{"absolute path is confined within working dir, not the real filesystem", "/tmp/file.txt", "/home/testuser/tmp/file.txt", false},
+		{"absolute path to sensitive file is confined within working dir", "/etc/passwd", "/home/testuser/etc/passwd", false},
+		{"relative path resolves to working dir", "file.txt", "/home/testuser/file.txt", false},
+		{"relative subdir resolves correctly", "subdir/file.txt", "/home/testuser/subdir/file.txt", false},
+		{"path with dots is cleaned", "./file.txt", "/home/testuser/file.txt", false},
+		{"request for the root itself resolves", "/", "/home/testuser", false},
+		{"single parent traversal escaping root is rejected", "../file.txt", "", true},
+		{"parent traversal escaping root via absolute path is rejected", "/../../../etc/passwd", "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := secureHandlers.resolvePath(tt.input)
+			result, err := secureHandlers.resolvePath(tt.input)
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestSecureSFTPHandlers_ResolvePath_NoConfinement verifies that a working
+// directory of "/" (e.g. the root user, or no chroot configured) imposes no
+// additional restriction beyond normal path cleaning.
+func TestSecureSFTPHandlers_ResolvePath_NoConfinement(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	cfg := &config.Config{}
+	handler := NewSFTPHandler(cfg, logger)
+	secureHandlers := newSecureSFTPHandlers(handler, "root", "/")
+
+	result, err := secureHandlers.resolvePath("/etc/passwd")
+	assert.NoError(t, err)
+	assert.Equal(t, "/etc/passwd", result)
 }
 
 func TestSecureSFTPHandlers_FilereadValidation(t *testing.T) {
@@ -259,38 +283,68 @@ func TestSecureSFTPHandlers_FilereadValidation(t *testing.T) {
 	secureHandlers := newSecureSFTPHandlers(handler, "testuser", "/tmp")
 
 	tests := []struct {
-		name          string
-		filepath      string
-		expectError   bool
-		errorContains string
+		name     string
+		filepath string
 	}{
-		{"allow read from tmp", "/tmp/allowed.txt", false, ""},
-		{"block read from /etc/passwd", "/etc/passwd", true, "access to system files denied"},
-		// Note: sftp.NewRequest cleans paths, so "../etc/passwd" becomes "/etc/passwd"
-		// The security still works because /etc/passwd is blocked as a sensitive file
-		{"block traversal via path cleaning", "../etc/passwd", true, "access to system files denied"},
+		{"allow read from tmp", "/tmp/allowed.txt"},
+		// Absolute paths are confined within the working directory (chroot
+		// semantics), so a request for "/etc/passwd" resolves to
+		// "/tmp/etc/passwd" and never reaches the real /etc/passwd - it is not
+		// blocked by the sensitive-file list because it can never reach it.
+		{"absolute path to /etc/passwd is confined, not the real file", "/etc/passwd"},
+		// Note: sftp.NewRequest normalizes paths against a "/" root, so
+		// "../etc/passwd" is equivalent to "/etc/passwd" here - also confined.
+		{"traversal-looking path is confined, not a real escape", "../etc/passwd"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a mock request
 			req := &mockSFTPRequest{method: "Get", filepath: tt.filepath}
 			_, err := secureHandlers.Fileread(req.toSFTPRequest())
 
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-			} else {
-				// For allowed paths, we may get file not found errors (expected)
-				// but not security errors
-				if err != nil {
-					assert.NotContains(t, err.Error(), "access to system files denied")
-					assert.NotContains(t, err.Error(), "directory traversal not allowed")
-				}
+			// None of these should produce a security-denial error - the
+			// confinement means the real /etc/passwd is never reached, so at
+			// most a "file not found" style OS error is expected.
+			if err != nil {
+				assert.NotContains(t, err.Error(), "access to system files denied")
+				assert.NotContains(t, err.Error(), "directory traversal not allowed")
+				assert.NotContains(t, err.Error(), "escapes configured root")
 			}
 		})
+	}
+}
+
+// TestSecureSFTPHandlers_FilereadConfinement is a regression test for the
+// SFTP path-confinement bypass: a user chrooted to a working directory must
+// never be able to read a file that lives outside that working directory,
+// even by requesting an absolute path that appears to point elsewhere.
+func TestSecureSFTPHandlers_FilereadConfinement(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	cfg := &config.Config{}
+	handler := NewSFTPHandler(cfg, logger)
+
+	// secretDir simulates a location outside the user's sandbox that must
+	// remain unreachable, e.g. another user's home directory.
+	secretDir := t.TempDir()
+	secretFile := secretDir + "/secret.txt"
+	if err := os.WriteFile(secretFile, []byte("top secret"), 0o600); err != nil {
+		t.Fatalf("failed to create secret file: %v", err)
+	}
+
+	workingDir := t.TempDir()
+	secureHandlers := newSecureSFTPHandlers(handler, "testuser", workingDir)
+
+	// The client requests the secret file by its real absolute path, exactly
+	// as a standard SFTP client would (e.g. `sftp> get <secretFile>`).
+	req := &mockSFTPRequest{method: "Get", filepath: secretFile}
+	reader, err := secureHandlers.Fileread(req.toSFTPRequest())
+	if err == nil {
+		// If no error, the resolved path must not be the real secret file -
+		// reading from it must not yield the real secret contents.
+		buf := make([]byte, len("top secret"))
+		n, _ := reader.ReadAt(buf, 0)
+		assert.NotEqual(t, "top secret", string(buf[:n]), "confined SFTP session must not be able to read a file outside its working directory")
 	}
 }
 
@@ -299,19 +353,21 @@ func TestSecureSFTPHandlers_FilewriteValidation(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 	cfg := &config.Config{}
 	handler := NewSFTPHandler(cfg, logger)
-	secureHandlers := newSecureSFTPHandlers(handler, "testuser", "/tmp")
+	workingDir := t.TempDir()
+	secureHandlers := newSecureSFTPHandlers(handler, "testuser", workingDir)
 
 	tests := []struct {
-		name          string
-		filepath      string
-		expectError   bool
-		errorContains string
+		name     string
+		filepath string
 	}{
-		{"block write to /bin", "/bin/malicious", true, "write operations to system directories not allowed"},
-		{"block write to /sbin", "/sbin/evil", true, "write operations to system directories not allowed"},
-		{"block write to /usr/bin", "/usr/bin/bad", true, "write operations to system directories not allowed"},
-		// Note: sftp.NewRequest cleans paths, so "../bin/test" becomes "/bin/test"
-		{"block traversal via path cleaning", "../bin/test", true, "write operations to system directories not allowed"},
+		// These look like protected system paths, but because the user is
+		// confined to workingDir (chroot semantics), they resolve to
+		// subdirectories of workingDir, not the real /bin, /sbin, etc., and
+		// so are not blocked by the protected-system-directory checks.
+		{"absolute path resembling /bin is confined within working dir", "/bin/malicious"},
+		{"absolute path resembling /sbin is confined within working dir", "/sbin/evil"},
+		{"absolute path resembling /usr/bin is confined within working dir", "/usr/bin/bad"},
+		{"traversal-looking path is confined within working dir", "../bin/test"},
 	}
 
 	for _, tt := range tests {
@@ -319,11 +375,9 @@ func TestSecureSFTPHandlers_FilewriteValidation(t *testing.T) {
 			req := &mockSFTPRequest{method: "Put", filepath: tt.filepath}
 			_, err := secureHandlers.Filewrite(req.toSFTPRequest())
 
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
+			if err != nil {
+				assert.NotContains(t, err.Error(), "write operations to system directories not allowed")
+				assert.NotContains(t, err.Error(), "escapes configured root")
 			}
 		})
 	}
@@ -334,22 +388,23 @@ func TestSecureSFTPHandlers_FilecmdValidation(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 	cfg := &config.Config{}
 	handler := NewSFTPHandler(cfg, logger)
-	secureHandlers := newSecureSFTPHandlers(handler, "testuser", "/tmp")
+	workingDir := t.TempDir()
+	secureHandlers := newSecureSFTPHandlers(handler, "testuser", workingDir)
 
 	tests := []struct {
-		name          string
-		method        string
-		filepath      string
-		target        string
-		expectError   bool
-		errorContains string
+		name     string
+		method   string
+		filepath string
+		target   string
 	}{
-		{"block mkdir in /bin", "Mkdir", "/bin/newdir", "", true, "write operations to system directories not allowed"},
-		{"block rmdir in /sbin", "Rmdir", "/sbin/dir", "", true, "write operations to system directories not allowed"},
-		{"block remove in /usr/bin", "Remove", "/usr/bin/file", "", true, "write operations to system directories not allowed"},
-		{"block rename to protected dir", "Rename", "/tmp/file", "/bin/file", true, "write operations to system directories not allowed"},
-		// Note: sftp.NewRequest cleans paths, so "../bin/newdir" becomes "/bin/newdir"
-		{"block traversal via path cleaning", "Mkdir", "../bin/newdir", "", true, "write operations to system directories not allowed"},
+		// These look like protected system paths, but the user is confined to
+		// workingDir (chroot semantics), so they resolve within workingDir,
+		// not the real /bin, /sbin, /usr/bin.
+		{"mkdir resembling /bin is confined within working dir", "Mkdir", "/bin/newdir", ""},
+		{"rmdir resembling /sbin is confined within working dir", "Rmdir", "/sbin/dir", ""},
+		{"remove resembling /usr/bin is confined within working dir", "Remove", "/usr/bin/file", ""},
+		{"rename target resembling /bin is confined within working dir", "Rename", "/tmp/file", "/bin/file"},
+		{"traversal-looking mkdir is confined within working dir", "Mkdir", "../bin/newdir", ""},
 	}
 
 	for _, tt := range tests {
@@ -357,11 +412,9 @@ func TestSecureSFTPHandlers_FilecmdValidation(t *testing.T) {
 			req := &mockSFTPRequest{method: tt.method, filepath: tt.filepath, target: tt.target}
 			err := secureHandlers.Filecmd(req.toSFTPRequest())
 
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
+			if err != nil {
+				assert.NotContains(t, err.Error(), "write operations to system directories not allowed")
+				assert.NotContains(t, err.Error(), "escapes configured root")
 			}
 		})
 	}
@@ -375,32 +428,27 @@ func TestSecureSFTPHandlers_FilelistValidation(t *testing.T) {
 	secureHandlers := newSecureSFTPHandlers(handler, "testuser", "/tmp")
 
 	tests := []struct {
-		name          string
-		method        string
-		filepath      string
-		expectError   bool
-		errorContains string
+		name     string
+		method   string
+		filepath string
 	}{
-		{"block list /etc/shadow", "List", "/etc/shadow", true, "access to system files denied"},
-		{"block stat /etc/passwd", "Stat", "/etc/passwd", true, "access to system files denied"},
-		{"block readlink sensitive path", "Readlink", "/root/.ssh", true, "access to system files denied"},
-		// Note: sftp.NewRequest cleans paths, so "../etc/" becomes "/etc"
-		// /etc is blocked because /etc/passwd, /etc/shadow, /etc/ssh are all protected
-		{"block traversal via path cleaning", "Stat", "../etc/passwd", true, "access to system files denied"},
+		// These look like protected system paths, but the user is confined to
+		// /tmp (chroot semantics), so they resolve to /tmp/etc/shadow etc.,
+		// not the real files, and are therefore not blocked.
+		{"list resembling /etc/shadow is confined within working dir", "List", "/etc/shadow"},
+		{"stat resembling /etc/passwd is confined within working dir", "Stat", "/etc/passwd"},
+		{"readlink resembling /root/.ssh is confined within working dir", "Readlink", "/root/.ssh"},
+		{"traversal-looking stat is confined within working dir", "Stat", "../etc/passwd"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &mockSFTPRequest{method: tt.method, filepath: tt.filepath}
-			result, err := secureHandlers.Filelist(req.toSFTPRequest())
+			_, err := secureHandlers.Filelist(req.toSFTPRequest())
 
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
-				}
-			} else {
-				assert.NotNil(t, result)
+			if err != nil {
+				assert.NotContains(t, err.Error(), "access to system files denied")
+				assert.NotContains(t, err.Error(), "escapes configured root")
 			}
 		})
 	}
@@ -411,7 +459,8 @@ func TestSecureSFTPHandlers_RootUserAccess(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 	cfg := &config.Config{}
 	handler := NewSFTPHandler(cfg, logger)
-	// Root user should be able to read system files but not write to protected dirs
+	// Root user is unconfined (workingDir "/"), so the sensitive-file
+	// blocklist is the operative defense for root sessions.
 	secureHandlers := newSecureSFTPHandlers(handler, "root", "/")
 
 	// Root CAN read /etc/passwd

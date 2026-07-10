@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/user"
@@ -276,12 +277,27 @@ func (s *secureSFTPHandlers) Handlers() sftp.Handlers {
 	}
 }
 
-// resolvePath resolves a relative path against the working directory and validates it.
-func (s *secureSFTPHandlers) resolvePath(requestPath string) string {
-	if filepath.IsAbs(requestPath) {
-		return filepath.Clean(requestPath)
+// resolvePath resolves a request path against the working directory,
+// treating workingDir as the SFTP root (matching OpenSSH ChrootDirectory
+// semantics). Client-supplied absolute paths (e.g. "/etc/passwd") are
+// interpreted as absolute *within* workingDir, not on the real filesystem -
+// standard SFTP clients routinely send absolute paths, so workingDir must
+// always be applied regardless of whether requestPath is absolute. Returns
+// an error if the resolved path would escape workingDir.
+func (s *secureSFTPHandlers) resolvePath(requestPath string) (string, error) {
+	root := filepath.Clean(s.workingDir)
+	resolved := filepath.Clean(filepath.Join(root, requestPath))
+
+	// A root of "/" (root user or no chroot configured) has nothing to escape.
+	if root == string(filepath.Separator) {
+		return resolved, nil
 	}
-	return filepath.Clean(filepath.Join(s.workingDir, requestPath))
+
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes configured root %q", requestPath, root)
+	}
+
+	return resolved, nil
 }
 
 // checkDirectoryTraversal checks for directory traversal attempts in the raw path.
@@ -301,7 +317,11 @@ func (s *secureSFTPHandlers) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 		return nil, err
 	}
 
-	path := s.resolvePath(r.Filepath)
+	path, err := s.resolvePath(r.Filepath)
+	if err != nil {
+		s.handler.logger.Warnf("SFTP read denied for user %s: %v", s.username, err)
+		return nil, err
+	}
 
 	// Validate the read operation against security policies
 	if err := s.handler.ValidateFileOperation(s.username, path, "read"); err != nil {
@@ -325,7 +345,11 @@ func (s *secureSFTPHandlers) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 		return nil, err
 	}
 
-	path := s.resolvePath(r.Filepath)
+	path, err := s.resolvePath(r.Filepath)
+	if err != nil {
+		s.handler.logger.Warnf("SFTP write denied for user %s: %v", s.username, err)
+		return nil, err
+	}
 
 	if err := s.handler.ValidateFileOperation(s.username, path, "write"); err != nil {
 		s.handler.logger.Warnf("SFTP write denied for user %s on %s: %v", s.username, path, err)
@@ -371,14 +395,28 @@ func (s *secureSFTPHandlers) Filecmd(r *sftp.Request) error {
 		return err
 	}
 
-	path := s.resolvePath(r.Filepath)
-	operation := strings.ToLower(r.Method)
-
-	if err := s.validateFilecmdOperation(path, r.Target, operation); err != nil {
+	path, err := s.resolvePath(r.Filepath)
+	if err != nil {
+		s.handler.logger.Warnf("SFTP command denied for user %s: %v", s.username, err)
 		return err
 	}
 
-	return s.executeFilecmd(r.Method, path, r)
+	var targetPath string
+	if r.Target != "" {
+		targetPath, err = s.resolvePath(r.Target)
+		if err != nil {
+			s.handler.logger.Warnf("SFTP command denied for user %s: %v", s.username, err)
+			return err
+		}
+	}
+
+	operation := strings.ToLower(r.Method)
+
+	if err := s.validateFilecmdOperation(path, targetPath, operation); err != nil {
+		return err
+	}
+
+	return s.executeFilecmd(r.Method, path, targetPath, r)
 }
 
 // validateFilecmdPaths validates file and target paths for directory traversal.
@@ -399,14 +437,14 @@ func (s *secureSFTPHandlers) validateFilecmdPaths(r *sftp.Request) error {
 }
 
 // validateFilecmdOperation validates the file operation against security policies.
-func (s *secureSFTPHandlers) validateFilecmdOperation(path, target, operation string) error {
+// path and targetPath must already be resolved (and confinement-checked) by the caller.
+func (s *secureSFTPHandlers) validateFilecmdOperation(path, targetPath, operation string) error {
 	if err := s.handler.ValidateFileOperation(s.username, path, operation); err != nil {
 		s.handler.logger.Warnf("SFTP %s denied for user %s on %s: %v", operation, s.username, path, err)
 		return err
 	}
 
-	if target != "" {
-		targetPath := s.resolvePath(target)
+	if targetPath != "" {
 		if err := s.handler.ValidateFileOperation(s.username, targetPath, operation); err != nil {
 			s.handler.logger.Warnf("SFTP %s denied for user %s on target %s: %v", operation, s.username, targetPath, err)
 			return err
@@ -417,12 +455,13 @@ func (s *secureSFTPHandlers) validateFilecmdOperation(path, target, operation st
 }
 
 // executeFilecmd routes the file command to the appropriate handler.
-func (s *secureSFTPHandlers) executeFilecmd(method, path string, r *sftp.Request) error {
+// targetPath (if any) has already been resolved and confinement-checked by Filecmd.
+func (s *secureSFTPHandlers) executeFilecmd(method, path, targetPath string, r *sftp.Request) error {
 	switch method {
 	case "Setstat":
 		return s.handleSetstat(path, r)
 	case "Rename":
-		return os.Rename(path, s.resolvePath(r.Target))
+		return os.Rename(path, targetPath)
 	case "Rmdir":
 		return os.Remove(path)
 	case "Mkdir":
@@ -430,9 +469,9 @@ func (s *secureSFTPHandlers) executeFilecmd(method, path string, r *sftp.Request
 	case "Remove":
 		return os.Remove(path)
 	case "Symlink":
-		return os.Symlink(path, s.resolvePath(r.Target))
+		return os.Symlink(path, targetPath)
 	case "Link":
-		return os.Link(path, s.resolvePath(r.Target))
+		return os.Link(path, targetPath)
 	default:
 		return errors.New("unsupported command: " + method)
 	}
@@ -507,7 +546,11 @@ func (s *secureSFTPHandlers) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 		return nil, err
 	}
 
-	path := s.resolvePath(r.Filepath)
+	path, err := s.resolvePath(r.Filepath)
+	if err != nil {
+		s.handler.logger.Warnf("SFTP list denied for user %s: %v", s.username, err)
+		return nil, err
+	}
 
 	// Validate the operation against security policies
 	operation := strings.ToLower(r.Method)
