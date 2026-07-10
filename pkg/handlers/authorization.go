@@ -285,6 +285,10 @@ func (ua *UserAuthorizer) matchWildcard(pattern, str string) bool {
 	return matched
 }
 
+// authorizedKeyTypePattern matches the SSH key type token that separates an
+// authorized_keys options list (if any) from the key material itself.
+var authorizedKeyTypePattern = regexp.MustCompile(`\b(ssh-rsa|ssh-dss|ecdsa-sha2-\w+|ssh-ed25519)\b`)
+
 // ParseAuthorizedKeyOptions parses options from an authorized_keys line.
 // Format: option1,option2=value,option3="quoted value" keytype base64key comment
 // Returns the key part (without options) and parsed options.
@@ -294,23 +298,21 @@ func ParseAuthorizedKeyOptions(line string) (string, *AuthorizedKeyOptions, erro
 		return "", nil, fmt.Errorf("empty or comment line")
 	}
 
-	// Check if line starts with an option (contains = or known option names before space)
-	// Simple heuristic: if the first part contains '=' or matches known options, it's an option list
+	// Determine whether the line starts with an options list rather than
+	// directly with the key type. Rather than enumerating specific option
+	// keywords (which misses standard OpenSSH options such as a bare
+	// `restrict`, `cert-authority`, `no-touch-required`, `verify-required`,
+	// `tunnel=`, or `principals=` that don't share a token with a
+	// recognized keyword), check the inverse: if the first
+	// whitespace-separated token is not itself a recognized SSH key type,
+	// the line must be starting with an options list.
 	parts := strings.Fields(line)
 	if len(parts) < 2 {
 		return line, &AuthorizedKeyOptions{}, nil // No options, return as-is
 	}
 
 	firstPart := parts[0]
-	hasOptions := strings.Contains(firstPart, "=") ||
-		strings.Contains(firstPart, "command") ||
-		strings.Contains(firstPart, "no-port-forwarding") ||
-		strings.Contains(firstPart, "no-pty") ||
-		strings.Contains(firstPart, "no-user-rc") ||
-		strings.Contains(firstPart, "no-X11-forwarding") ||
-		strings.Contains(firstPart, "no-agent-forwarding") ||
-		strings.Contains(firstPart, "pty") ||
-		strings.Contains(firstPart, "from")
+	hasOptions := !authorizedKeyTypePattern.MatchString(firstPart)
 
 	if !hasOptions {
 		// No options present
@@ -319,8 +321,7 @@ func ParseAuthorizedKeyOptions(line string) (string, *AuthorizedKeyOptions, erro
 
 	// Find where options end and key begins
 	// Look for the key type (ssh-rsa, ssh-dss, ecdsa-sha2-*, ssh-ed25519)
-	keyTypePattern := regexp.MustCompile(`\b(ssh-rsa|ssh-dss|ecdsa-sha2-\w+|ssh-ed25519)\b`)
-	keyStart := keyTypePattern.FindStringIndex(line)
+	keyStart := authorizedKeyTypePattern.FindStringIndex(line)
 	if keyStart == nil {
 		return "", nil, fmt.Errorf("no valid key type found")
 	}
