@@ -18,6 +18,7 @@ import (
 	"github.com/go-i2p/go-sshd/pkg/crypto"
 	"github.com/go-i2p/go-sshd/pkg/embedded"
 	"github.com/go-i2p/go-sshd/pkg/server"
+	"github.com/go-i2p/go-sshd/pkg/signals"
 )
 
 // ListenerFactory creates the network listener a server binary accepts
@@ -75,7 +76,7 @@ advantages including single binary distribution and efficient resource usage.`,
 				return runInetdMode(cfg)
 			}
 
-			return runStandardServerMode(cfg, opts.CreateListener)
+			return runStandardServerMode(configFile, cfg, opts.CreateListener)
 		},
 	}
 
@@ -112,8 +113,10 @@ func configureCommandFlags(cmd *cobra.Command, configFile *string, port *int, da
 	cmd.Flags().BoolVarP(generateKeys, "generate-keys", "G", false, "generate host keys and exit")
 }
 
-// runStandardServerMode initializes and runs the SSH server in standard mode.
-func runStandardServerMode(cfg *config.Config, createListener ListenerFactory) error {
+// runStandardServerMode initializes and runs the SSH server in standard mode
+// with proper signal handling for graceful shutdown (SIGTERM/SIGINT) and
+// configuration reload (SIGHUP).
+func runStandardServerMode(configFile string, cfg *config.Config, createListener ListenerFactory) error {
 	listener, err := createListener(cfg)
 	if err != nil {
 		return err
@@ -125,11 +128,69 @@ func runStandardServerMode(cfg *config.Config, createListener ListenerFactory) e
 		return err
 	}
 
-	setupServerCleanup(srv)
-	// Start server in foreground mode (by design for modern deployment).
-	// Go servers should not daemonize; instead, systemd or container runtimes
-	// manage the process lifecycle.
-	return srv.Start()
+	// Create a signal handler for graceful shutdown and configuration reload.
+	handler := signals.NewHandler()
+	defer handler.Stop()
+
+	// Channels for signal events and server completion.
+	serverErr := make(chan error, 1)
+	reloadRequested := make(chan struct{}, 1)
+
+	// Start the SSH server in a goroutine so we can monitor signals.
+	go func() {
+		serverErr <- srv.Start()
+	}()
+
+	// Monitor for reload signals in a separate goroutine.
+	go func() {
+		for {
+			if handler.WaitForReload() == nil {
+				return // Context cancelled, handler shutdown
+			}
+			select {
+			case reloadRequested <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	// Main signal handling loop: monitor for shutdown and reload signals.
+	for {
+		select {
+		case err := <-serverErr:
+			// Server exited (normally or with error).
+			return err
+
+		case <-handler.Context().Done():
+			// Shutdown signal received; gracefully stop the server.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := srv.Stop(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "error stopping server: %v\n", err)
+			}
+			srv.Cleanup()
+			return nil
+
+		case <-reloadRequested:
+			// Reload signal (SIGHUP) received; reload configuration.
+			newCfg, err := config.Load(configFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error reloading configuration: %v\n", err)
+				continue
+			}
+
+			// Reconfigure the embedded server with the new configuration.
+			opts := configToEmbeddedOptions(newCfg)
+			opts.Listener = listener
+			if err := srv.Configure(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "error reconfiguring server: %v\n", err)
+				continue
+			}
+
+			// Update the config reference so subsequent reloads use the right file.
+			cfg = newCfg
+		}
+	}
 }
 
 // createEmbeddedServer creates and configures an embedded SSH server instance.
@@ -143,18 +204,6 @@ func createEmbeddedServer(cfg *config.Config, listener net.Listener) (embedded.E
 	}
 
 	return srv, nil
-}
-
-// setupServerCleanup configures deferred cleanup operations for the server.
-func setupServerCleanup(srv embedded.EmbeddedSSHServer) {
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stopErr := srv.Stop(ctx); stopErr != nil {
-			fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", stopErr)
-		}
-		srv.Cleanup()
-	}()
 }
 
 // validateAndReportConfig performs comprehensive configuration validation
