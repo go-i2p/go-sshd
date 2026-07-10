@@ -37,7 +37,23 @@ func NewStandardEmbeddedSSHServer(listener net.Listener, opts ConfigOptions) (Em
 		return nil, fmt.Errorf("listener is required")
 	}
 
-	// Apply defaults for nil config sections
+	applyConfigDefaults(&opts)
+	opts.Listener = listener
+
+	server := &StandardEmbeddedSSHServer{
+		listener: listener,
+		opts:     opts,
+	}
+
+	if err := server.Configure(opts); err != nil {
+		return nil, fmt.Errorf("initial configuration failed: %w", err)
+	}
+
+	return server, nil
+}
+
+// applyConfigDefaults ensures all required config sections have default values.
+func applyConfigDefaults(opts *ConfigOptions) {
 	if opts.Authentication == nil {
 		opts.Authentication = DefaultAuthenticationConfig()
 	}
@@ -50,20 +66,6 @@ func NewStandardEmbeddedSSHServer(listener net.Listener, opts ConfigOptions) (Em
 	if opts.Forwarding == nil {
 		opts.Forwarding = DefaultForwardingConfig()
 	}
-
-	opts.Listener = listener
-
-	server := &StandardEmbeddedSSHServer{
-		listener: listener,
-		opts:     opts,
-	}
-
-	// Configure the server with initial options
-	if err := server.Configure(opts); err != nil {
-		return nil, fmt.Errorf("initial configuration failed: %w", err)
-	}
-
-	return server, nil
 }
 
 // Configure applies configuration options to the server.
@@ -540,43 +542,70 @@ func (s *StandardEmbeddedSSHServer) Start() error {
 // Stop initiates graceful shutdown with context timeout.
 // Waits for active connections to close or context deadline.
 func (s *StandardEmbeddedSSHServer) Stop(ctx context.Context) error {
-	s.mu.RLock()
-	if !s.started {
-		s.mu.RUnlock()
-		return fmt.Errorf("server not started")
+	sshServer, err := s.validateStopPreconditions()
+	if err != nil {
+		return err
 	}
-	sshServer := s.ssh
-	if sshServer == nil {
-		s.mu.RUnlock()
-		return fmt.Errorf("server not initialized")
-	}
-	s.mu.RUnlock()
 
-	var err error
+	var stopErr error
 	s.stopOnce.Do(func() {
-		s.logger.Info("Stopping embedded SSH server")
-
-		// Create channel to signal shutdown completion
-		done := make(chan error, 1)
-
-		go func() {
-			done <- sshServer.Close()
-		}()
-
-		// Wait for shutdown or context timeout
-		select {
-		case err = <-done:
-			if err != nil {
-				s.logger.Warnf("Server shutdown error: %v", err)
-			} else {
-				s.logger.Info("Server shutdown complete")
-			}
-		case <-ctx.Done():
-			err = fmt.Errorf("shutdown timeout: %w", ctx.Err())
-			s.logger.Warnf("Server shutdown timeout: %v", err)
-		}
+		stopErr = s.executeShutdown(ctx, sshServer)
 	})
 
+	return stopErr
+}
+
+// validateStopPreconditions checks if the server can be stopped.
+func (s *StandardEmbeddedSSHServer) validateStopPreconditions() (*ssh.Server, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.started {
+		return nil, fmt.Errorf("server not started")
+	}
+	if s.ssh == nil {
+		return nil, fmt.Errorf("server not initialized")
+	}
+
+	return s.ssh, nil
+}
+
+// executeShutdown performs the actual server shutdown with timeout handling.
+func (s *StandardEmbeddedSSHServer) executeShutdown(ctx context.Context, sshServer *ssh.Server) error {
+	s.logger.Info("Stopping embedded SSH server")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sshServer.Close()
+	}()
+
+	return s.waitForShutdown(ctx, done)
+}
+
+// waitForShutdown waits for shutdown completion or context timeout.
+func (s *StandardEmbeddedSSHServer) waitForShutdown(ctx context.Context, done chan error) error {
+	select {
+	case err := <-done:
+		return s.handleShutdownCompletion(err)
+	case <-ctx.Done():
+		return s.handleShutdownTimeout(ctx)
+	}
+}
+
+// handleShutdownCompletion logs and returns the shutdown result.
+func (s *StandardEmbeddedSSHServer) handleShutdownCompletion(err error) error {
+	if err != nil {
+		s.logger.Warnf("Server shutdown error: %v", err)
+	} else {
+		s.logger.Info("Server shutdown complete")
+	}
+	return err
+}
+
+// handleShutdownTimeout logs and returns timeout error.
+func (s *StandardEmbeddedSSHServer) handleShutdownTimeout(ctx context.Context) error {
+	err := fmt.Errorf("shutdown timeout: %w", ctx.Err())
+	s.logger.Warnf("Server shutdown timeout: %v", err)
 	return err
 }
 

@@ -281,37 +281,47 @@ func (h *X11Handler) AllocateDisplay(sessionID string) (int, func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Find available display starting from X11DisplayOffset
-	offset := 10 // Default OpenSSH value
-	if h.config != nil && h.config.X11DisplayOffset > 0 {
-		offset = h.config.X11DisplayOffset
-	}
-
-	// Simple allocation: find first unused display
-	display := offset
-	for {
-		inUse := false
-		for _, d := range h.displays {
-			if d == display {
-				inUse = true
-				break
-			}
-		}
-		if !inUse {
-			break
-		}
-		display++
-	}
-
+	offset := h.getDisplayOffset()
+	display := h.findAvailableDisplay(offset)
 	h.displays[sessionID] = display
 
-	cleanup := func() {
+	return display, h.createCleanupFunc(sessionID)
+}
+
+// getDisplayOffset returns the X11 display offset from config or default.
+func (h *X11Handler) getDisplayOffset() int {
+	if h.config != nil && h.config.X11DisplayOffset > 0 {
+		return h.config.X11DisplayOffset
+	}
+	return 10 // Default OpenSSH value
+}
+
+// findAvailableDisplay finds the first unused display number starting from offset.
+func (h *X11Handler) findAvailableDisplay(offset int) int {
+	display := offset
+	for h.isDisplayInUse(display) {
+		display++
+	}
+	return display
+}
+
+// isDisplayInUse checks if a display number is currently allocated.
+func (h *X11Handler) isDisplayInUse(display int) bool {
+	for _, d := range h.displays {
+		if d == display {
+			return true
+		}
+	}
+	return false
+}
+
+// createCleanupFunc creates a function to release the allocated display.
+func (h *X11Handler) createCleanupFunc(sessionID string) func() {
+	return func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		delete(h.displays, sessionID)
 	}
-
-	return display, cleanup
 }
 
 // GenerateX11Cookie generates a random X11 authentication cookie.

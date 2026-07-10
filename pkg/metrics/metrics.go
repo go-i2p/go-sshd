@@ -46,72 +46,94 @@ func NewCollector(logger *logrus.Logger) *Collector {
 	registry := prometheus.NewRegistry()
 
 	c := &Collector{
-		// Connection metrics
-		connectionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "sshd_connections_total",
-			Help: "Total number of SSH connections accepted",
-		}),
-		connectionsActive: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "sshd_connections_active",
-			Help: "Current number of active SSH connections",
-		}),
-		connectionDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "sshd_connection_duration_seconds",
-			Help:    "Connection duration in seconds",
-			Buckets: prometheus.DefBuckets, // Standard buckets: 0.005s to 10s
-		}),
-
-		// Authentication metrics (labeled by method and result)
-		authAttemptsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "sshd_auth_attempts_total",
-				Help: "Total authentication attempts by method and result",
-			},
-			[]string{"method", "result"}, // method: publickey, password; result: success, failure
-		),
-
-		// Session metrics
-		sessionsActive: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "sshd_sessions_active",
-			Help: "Current number of active SSH sessions (shell, sftp, etc)",
-		}),
-		sessionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "sshd_sessions_total",
-			Help: "Total number of SSH sessions started",
-		}),
-
-		// Data transfer metrics (labeled by direction)
-		bytesTransferred: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "sshd_bytes_transferred_total",
-				Help: "Total bytes transferred through SSH server",
-			},
-			[]string{"direction"}, // direction: sent, received
-		),
-
-		// Request metrics (labeled by type: shell, sftp, forward)
-		requestsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "sshd_requests_total",
-				Help: "Total number of SSH requests by type",
-			},
-			[]string{"type", "result"}, // type: shell, sftp, forward; result: success, failure
-		),
-		requestDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "sshd_request_duration_seconds",
-				Help:    "Request duration in seconds by type",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"type"},
-		),
-
 		registry:       registry,
 		logger:         logger,
 		activeSessions: make(map[string]time.Time),
 	}
 
-	// Register all metrics with the registry
+	c.initializeConnectionMetrics()
+	c.initializeAuthMetrics()
+	c.initializeSessionMetrics()
+	c.initializeDataMetrics()
+	c.initializeRequestMetrics()
+
+	c.registerAllMetrics(registry)
+
+	return c
+}
+
+// initializeConnectionMetrics creates connection-related metrics.
+func (c *Collector) initializeConnectionMetrics() {
+	c.connectionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sshd_connections_total",
+		Help: "Total number of SSH connections accepted",
+	})
+	c.connectionsActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "sshd_connections_active",
+		Help: "Current number of active SSH connections",
+	})
+	c.connectionDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "sshd_connection_duration_seconds",
+		Help:    "Connection duration in seconds",
+		Buckets: prometheus.DefBuckets,
+	})
+}
+
+// initializeAuthMetrics creates authentication-related metrics.
+func (c *Collector) initializeAuthMetrics() {
+	c.authAttemptsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sshd_auth_attempts_total",
+			Help: "Total authentication attempts by method and result",
+		},
+		[]string{"method", "result"},
+	)
+}
+
+// initializeSessionMetrics creates session-related metrics.
+func (c *Collector) initializeSessionMetrics() {
+	c.sessionsActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "sshd_sessions_active",
+		Help: "Current number of active SSH sessions (shell, sftp, etc)",
+	})
+	c.sessionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sshd_sessions_total",
+		Help: "Total number of SSH sessions started",
+	})
+}
+
+// initializeDataMetrics creates data transfer metrics.
+func (c *Collector) initializeDataMetrics() {
+	c.bytesTransferred = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sshd_bytes_transferred_total",
+			Help: "Total bytes transferred through SSH server",
+		},
+		[]string{"direction"},
+	)
+}
+
+// initializeRequestMetrics creates request-related metrics.
+func (c *Collector) initializeRequestMetrics() {
+	c.requestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sshd_requests_total",
+			Help: "Total number of SSH requests by type",
+		},
+		[]string{"type", "result"},
+	)
+	c.requestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "sshd_request_duration_seconds",
+			Help:    "Request duration in seconds by type",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"type"},
+	)
+}
+
+// registerAllMetrics registers all metrics with the Prometheus registry.
+func (c *Collector) registerAllMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(
 		c.connectionsTotal,
 		c.connectionsActive,
@@ -123,8 +145,6 @@ func NewCollector(logger *logrus.Logger) *Collector {
 		c.requestsTotal,
 		c.requestDuration,
 	)
-
-	return c
 }
 
 // RecordConnection increments total and active connection counts.

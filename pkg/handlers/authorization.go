@@ -398,52 +398,78 @@ func parseCommaSeparated(s string) []string {
 
 // parseOption parses a single option and updates the options struct.
 func parseOption(opt string, options *AuthorizedKeyOptions) error {
-	// Handle key=value options
 	if strings.Contains(opt, "=") {
-		parts := strings.SplitN(opt, "=", 2)
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
+		return parseKeyValueOption(opt, options)
+	}
+	return parseFlagOption(opt, options)
+}
 
-		// Remove quotes if present
-		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-			value = value[1 : len(value)-1]
-		}
+// parseKeyValueOption parses key=value style options and updates the options struct.
+func parseKeyValueOption(opt string, options *AuthorizedKeyOptions) error {
+	key, value := extractKeyValue(opt)
 
-		switch key {
-		case "command":
-			options.Command = value
-		case "environment":
-			// Format: environment="VAR=value"
-			if envParts := strings.SplitN(value, "=", 2); len(envParts) == 2 {
-				options.Environment[envParts[0]] = envParts[1]
-			}
-		case "from":
-			// Format: from="host1,host2"
-			hosts := strings.Split(value, ",")
-			for _, host := range hosts {
-				options.From = append(options.From, strings.TrimSpace(host))
-			}
-		default:
-			// Unknown key=value option, ignore for compatibility
-		}
-	} else {
-		// Handle flag options
-		switch opt {
-		case "no-port-forwarding":
-			options.NoPortForwarding = true
-		case "no-pty":
-			options.NoPTY = true
-		case "no-user-rc":
-			options.NoUserRC = true
-		case "no-X11-forwarding":
-			options.NoX11Forwarding = true
-		case "no-agent-forwarding":
-			options.NoAgentForwarding = true
-		case "pty":
-			options.PTY = true
-		default:
-			// Unknown flag option, ignore for compatibility
-		}
+	switch key {
+	case "command":
+		options.Command = value
+	case "environment":
+		parseEnvironmentOption(value, options)
+	case "from":
+		parseFromOption(value, options)
+	default:
+		// Unknown key=value option, ignore for compatibility
+	}
+
+	return nil
+}
+
+// extractKeyValue extracts and unquotes key-value pairs from option strings.
+func extractKeyValue(opt string) (string, string) {
+	parts := strings.SplitN(opt, "=", 2)
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	// Remove quotes if present
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = value[1 : len(value)-1]
+	}
+
+	return key, value
+}
+
+// parseEnvironmentOption parses environment variable options.
+// Format: environment="VAR=value"
+func parseEnvironmentOption(value string, options *AuthorizedKeyOptions) {
+	if envParts := strings.SplitN(value, "=", 2); len(envParts) == 2 {
+		options.Environment[envParts[0]] = envParts[1]
+	}
+}
+
+// parseFromOption parses source address restriction options.
+// Format: from="host1,host2"
+func parseFromOption(value string, options *AuthorizedKeyOptions) {
+	hosts := strings.Split(value, ",")
+	for _, host := range hosts {
+		options.From = append(options.From, strings.TrimSpace(host))
+	}
+}
+
+// parseFlagOption parses boolean flag options and updates the options struct.
+func parseFlagOption(opt string, options *AuthorizedKeyOptions) error {
+	switch opt {
+	case "no-port-forwarding":
+		options.NoPortForwarding = true
+	case "no-pty":
+		options.NoPTY = true
+	case "no-user-rc":
+		options.NoUserRC = true
+	case "no-X11-forwarding":
+		options.NoX11Forwarding = true
+	case "no-agent-forwarding":
+		options.NoAgentForwarding = true
+	case "pty":
+		options.PTY = true
+	default:
+		// Unknown flag option, ignore for compatibility
 	}
 
 	return nil

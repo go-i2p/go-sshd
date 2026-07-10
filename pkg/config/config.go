@@ -194,32 +194,41 @@ func (c *Config) validateListenAddresses(result *ValidationResult) {
 	seenAddresses := make(map[string]bool)
 
 	for _, addr := range c.ListenAddress {
-		// Check for duplicates
-		if seenAddresses[addr] {
-			result.AddIssue(ValidationWarning, "ListenAddress",
-				fmt.Sprintf("Duplicate listen address: %s", addr),
-				"Remove duplicate entries")
+		if c.checkDuplicateAddress(addr, seenAddresses, result) {
 			continue
 		}
 		seenAddresses[addr] = true
 
-		// Validate address format
-		if addr == "0.0.0.0" || addr == "::" {
-			result.AddIssue(ValidationInfo, "ListenAddress",
-				fmt.Sprintf("Listening on all interfaces: %s", addr),
-				"Consider binding to specific interfaces for security")
-			continue
-		}
+		c.validateAddressFormat(addr, result)
+	}
+}
 
-		// Parse and validate IP address
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			// Try as hostname
-			if !isValidHostname(addr) {
-				result.AddIssue(ValidationError, "ListenAddress",
-					fmt.Sprintf("Invalid IP address or hostname: %s", addr),
-					"Use a valid IP address or resolvable hostname")
-			}
+// checkDuplicateAddress checks for duplicate listen addresses.
+func (c *Config) checkDuplicateAddress(addr string, seen map[string]bool, result *ValidationResult) bool {
+	if seen[addr] {
+		result.AddIssue(ValidationWarning, "ListenAddress",
+			fmt.Sprintf("Duplicate listen address: %s", addr),
+			"Remove duplicate entries")
+		return true
+	}
+	return false
+}
+
+// validateAddressFormat validates the format and security of a listen address.
+func (c *Config) validateAddressFormat(addr string, result *ValidationResult) {
+	if addr == "0.0.0.0" || addr == "::" {
+		result.AddIssue(ValidationInfo, "ListenAddress",
+			fmt.Sprintf("Listening on all interfaces: %s", addr),
+			"Consider binding to specific interfaces for security")
+		return
+	}
+
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		if !isValidHostname(addr) {
+			result.AddIssue(ValidationError, "ListenAddress",
+				fmt.Sprintf("Invalid IP address or hostname: %s", addr),
+				"Use a valid IP address or resolvable hostname")
 		}
 	}
 }
@@ -415,26 +424,33 @@ func (c *Config) validateForwarding(result *ValidationResult) {
 // validateSubsystems checks subsystem configuration.
 func (c *Config) validateSubsystems(result *ValidationResult) {
 	for name, path := range c.Subsystem {
-		// Check if subsystem binary exists
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			result.AddIssue(ValidationError, "Subsystem",
-				fmt.Sprintf("Subsystem '%s' binary not found: %s", name, path),
-				"Install the subsystem binary or correct the path")
-		} else if err != nil {
-			result.AddIssue(ValidationWarning, "Subsystem",
-				fmt.Sprintf("Cannot access subsystem '%s' binary: %s (%v)", name, path, err),
-				"Check file permissions")
-		}
-
-		// Validate common subsystems
-		if name == "sftp" && !strings.Contains(path, "sftp") {
-			result.AddIssue(ValidationWarning, "Subsystem",
-				fmt.Sprintf("SFTP subsystem path may be incorrect: %s", path),
-				"Ensure path points to an SFTP server binary")
-		}
+		c.validateSubsystemBinary(name, path, result)
 	}
 
-	// Recommend SFTP subsystem
+	c.recommendSFTPSubsystem(result)
+}
+
+// validateSubsystemBinary checks if a subsystem binary exists and is accessible.
+func (c *Config) validateSubsystemBinary(name, path string, result *ValidationResult) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		result.AddIssue(ValidationError, "Subsystem",
+			fmt.Sprintf("Subsystem '%s' binary not found: %s", name, path),
+			"Install the subsystem binary or correct the path")
+	} else if err != nil {
+		result.AddIssue(ValidationWarning, "Subsystem",
+			fmt.Sprintf("Cannot access subsystem '%s' binary: %s (%v)", name, path, err),
+			"Check file permissions")
+	}
+
+	if name == "sftp" && !strings.Contains(path, "sftp") {
+		result.AddIssue(ValidationWarning, "Subsystem",
+			fmt.Sprintf("SFTP subsystem path may be incorrect: %s", path),
+			"Ensure path points to an SFTP server binary")
+	}
+}
+
+// recommendSFTPSubsystem adds informational message if SFTP is not configured.
+func (c *Config) recommendSFTPSubsystem(result *ValidationResult) {
 	if _, hasSFTP := c.Subsystem["sftp"]; !hasSFTP {
 		result.AddIssue(ValidationInfo, "Subsystem",
 			"No SFTP subsystem configured",
@@ -595,26 +611,17 @@ func parseConfigLine(line string, lineNum int, cfg *Config) error {
 		return fmt.Errorf("config parse error at line %d: %w", lineNum, err)
 	}
 
-	if len(tokens) < 2 {
-		// Lines with just a directive and no arguments should cause an error
-		// when the directive is parsed, so continue to parseDirective
-		if len(tokens) == 1 {
-			if err := cfg.parseDirective(strings.ToLower(tokens[0]), []string{}); err != nil {
-				return fmt.Errorf("config error at line %d: %w", lineNum, err)
-			}
-		}
+	if len(tokens) < 1 {
 		return nil
 	}
 
 	directive := strings.ToLower(tokens[0])
-	args := tokens[1:]
-
-	// Parse directives
-	if err := cfg.parseDirective(directive, args); err != nil {
-		return fmt.Errorf("config error at line %d: %w", lineNum, err)
+	args := []string{}
+	if len(tokens) > 1 {
+		args = tokens[1:]
 	}
 
-	return nil
+	return cfg.parseDirective(directive, args)
 }
 
 // parseDirective processes individual configuration directives.
