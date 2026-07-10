@@ -218,7 +218,7 @@ func (h *X11Handler) connectToLocalX11() (net.Conn, error) {
 	if host == "" {
 		host = "localhost"
 	}
-	tcpAddr := fmt.Sprintf("%s:%d", host, 6000+displayNum)
+	tcpAddr := net.JoinHostPort(host, strconv.Itoa(6000+displayNum))
 	conn, err = net.Dial("tcp", tcpAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to X11 server: %w", err)
