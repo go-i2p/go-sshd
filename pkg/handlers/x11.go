@@ -345,7 +345,7 @@ func ParseDisplayNumber(display string) (host string, displayNum, screenNum int,
 
 	if display == "" {
 		err = fmt.Errorf("empty display string")
-		return
+		return host, displayNum, screenNum, err
 	}
 
 	// Parse format: [host]:display[.screen]
@@ -365,7 +365,7 @@ func ParseDisplayNumber(display string) (host string, displayNum, screenNum int,
 	colonIdx := strings.LastIndex(parts, ":")
 	if colonIdx < 0 {
 		err = fmt.Errorf("invalid display format: missing colon")
-		return
+		return host, displayNum, screenNum, err
 	}
 
 	if colonIdx == 0 {
@@ -377,5 +377,5 @@ func ParseDisplayNumber(display string) (host string, displayNum, screenNum int,
 		displayNum, err = strconv.Atoi(parts[colonIdx+1:])
 	}
 
-	return
+	return host, displayNum, screenNum, err
 }

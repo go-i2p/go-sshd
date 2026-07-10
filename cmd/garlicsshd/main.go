@@ -97,7 +97,8 @@ func loadAndApplyConfig(configFile string, port int) (*config.Config, error) {
 
 // configureCommandFlags sets up all OpenSSH-compatible command line flags.
 func configureCommandFlags(cmd *cobra.Command, configFile *string, port *int, daemon *bool,
-	testConfig *bool, showVersion *bool, inetdMode *bool, generateKeys *bool) {
+	testConfig, showVersion, inetdMode, generateKeys *bool,
+) {
 	cmd.Flags().StringVarP(configFile, "config", "f", "/etc/ssh/sshd_config", "configuration file")
 	cmd.Flags().IntVarP(port, "port", "p", 0, "port number (overrides config)")
 	cmd.Flags().BoolVarP(daemon, "daemon", "D", false, "run in foreground mode")

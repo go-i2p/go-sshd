@@ -284,7 +284,8 @@ func (h *ShellHandler) buildEnvironment(s ssh.Session, term string) []string {
 	env := os.Environ()
 
 	// Add SSH-specific environment variables for OpenSSH compatibility
-	env = append(env,
+	env = append(
+		env,
 		fmt.Sprintf("SSH_CLIENT=%s", s.RemoteAddr()),
 		fmt.Sprintf("SSH_CONNECTION=%s %s", s.RemoteAddr(), s.LocalAddr()),
 		fmt.Sprintf("USER=%s", s.User()),

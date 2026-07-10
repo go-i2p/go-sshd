@@ -285,11 +285,12 @@ type agentMockContext struct {
 	mu          sync.Mutex
 }
 
-func (m *agentMockContext) User() string                            { return m.user }
-func (m *agentMockContext) SessionID() string                       { return "test-session" }
-func (m *agentMockContext) ClientVersion() string                   { return "test-client" }
-func (m *agentMockContext) ServerVersion() string                   { return "test-server" }
-func (m *agentMockContext) RemoteAddr() net.Addr                    { return &agentMockAddr{addr: "127.0.0.1:12345"} }
+func (m *agentMockContext) User() string          { return m.user }
+func (m *agentMockContext) SessionID() string     { return "test-session" }
+func (m *agentMockContext) ClientVersion() string { return "test-client" }
+func (m *agentMockContext) ServerVersion() string { return "test-server" }
+func (m *agentMockContext) RemoteAddr() net.Addr { return &agentMockAddr{addr: "127.0.0.1:12345"} }
+
 func (m *agentMockContext) LocalAddr() net.Addr                     { return &agentMockAddr{addr: "127.0.0.1:22"} }
 func (m *agentMockContext) Permissions() *ssh.Permissions           { return m.permissions }
 func (m *agentMockContext) SetValue(key, value interface{})         {}
