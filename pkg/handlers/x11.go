@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +42,30 @@ func NewX11Handler(cfg *config.Config, logger *logrus.Logger) *X11Handler {
 	}
 }
 
+// x11SessionStateKey is the ssh.Context value key under which the per-session
+// X11 forwarding state (allocated display, negotiated auth) is stored after a
+// successful x11-req request, for later use by the x11 channel handler.
+const x11SessionStateKey = "x11-session-state"
+
+// x11ReqPayload is the RFC 4254 §6.3.1 "x11-req" request payload.
+type x11ReqPayload struct {
+	SingleConnection bool
+	AuthProtocol     string
+	AuthCookie       string
+	ScreenNumber     uint32
+}
+
+// x11SessionState holds the per-session X11 forwarding state negotiated via
+// the x11-req request. It is used to select the correct local X11 display
+// when an x11 channel is later opened for this session, instead of relying
+// on the sshd process's own $DISPLAY.
+type x11SessionState struct {
+	display      int
+	authProtocol string
+	authCookie   string
+	screenNumber int
+}
+
 // CreateX11RequestHandler creates an SSH request handler for X11 forwarding requests.
 // Handles x11-req requests to establish X11 forwarding for a session.
 func (h *X11Handler) CreateX11RequestHandler() ssh.RequestHandler {
@@ -62,20 +85,40 @@ func (h *X11Handler) CreateX11RequestHandler() ssh.RequestHandler {
 			return false, nil
 		}
 
-		// Parse X11 request payload
-		// Format: bool (single-connection), string (auth-protocol), string (auth-cookie), uint32 (screen-number)
-		if len(req.Payload) < 1 {
+		// Parse the x11-req payload: single-connection flag, auth protocol,
+		// auth cookie, and screen number (RFC 4254 §6.3.1).
+		var payload x11ReqPayload
+		if err := gossh.Unmarshal(req.Payload, &payload); err != nil {
+			if h.logger != nil {
+				h.logger.WithFields(logrus.Fields{
+					"user":      ctx.User(),
+					"sessionID": ctx.SessionID(),
+					"error":     err,
+				}).Warn("Failed to parse x11-req payload")
+			}
 			return false, nil
 		}
 
-		// For simplicity, we accept the request and will set up forwarding when x11 channels are opened
-		// Store the request approval in context for later channel handling
+		// Allocate a per-session display and release it when the session ends.
+		display, cleanup := h.AllocateDisplay(ctx.SessionID())
+		go func() {
+			<-ctx.Done()
+			cleanup()
+		}()
+
+		ctx.SetValue(x11SessionStateKey, &x11SessionState{
+			display:      display,
+			authProtocol: payload.AuthProtocol,
+			authCookie:   payload.AuthCookie,
+			screenNumber: int(payload.ScreenNumber),
+		})
 		ctx.SetValue("x11-forwarding-enabled", true)
 
 		if h.logger != nil {
 			h.logger.WithFields(logrus.Fields{
 				"user":      ctx.User(),
 				"sessionID": ctx.SessionID(),
+				"display":   display,
 			}).Info("X11 forwarding request approved")
 		}
 
@@ -91,6 +134,18 @@ func (h *X11Handler) CreateX11ChannelHandler() ssh.ChannelHandler {
 			return
 		}
 
+		state, ok := ctx.Value(x11SessionStateKey).(*x11SessionState)
+		if !ok || state == nil {
+			newChan.Reject(gossh.ConnectionFailed, "no X11 display allocated for this session")
+			if h.logger != nil {
+				h.logger.WithFields(logrus.Fields{
+					"user":      ctx.User(),
+					"sessionID": ctx.SessionID(),
+				}).Error("X11 channel opened without a prior successful x11-req")
+			}
+			return
+		}
+
 		channel, requests, err := h.acceptX11Channel(newChan, ctx)
 		if err != nil {
 			return
@@ -99,7 +154,7 @@ func (h *X11Handler) CreateX11ChannelHandler() ssh.ChannelHandler {
 		// Discard all requests on X11 channels (standard SSH behavior)
 		go gossh.DiscardRequests(requests)
 
-		x11Conn, err := h.connectAndLogX11(ctx)
+		x11Conn, err := h.connectAndLogX11(ctx, state.display)
 		if err != nil {
 			channel.Close()
 			return
@@ -147,14 +202,16 @@ func (h *X11Handler) acceptX11Channel(newChan gossh.NewChannel, ctx ssh.Context)
 	return channel, requests, nil
 }
 
-// connectAndLogX11 connects to the local X11 server and logs any errors.
-func (h *X11Handler) connectAndLogX11(ctx ssh.Context) (net.Conn, error) {
-	x11Conn, err := h.connectToLocalX11()
+// connectAndLogX11 connects to the local X11 server for the session's
+// allocated display and logs any errors.
+func (h *X11Handler) connectAndLogX11(ctx ssh.Context, display int) (net.Conn, error) {
+	x11Conn, err := h.connectToLocalX11(display)
 	if err != nil {
 		if h.logger != nil {
 			h.logger.WithFields(logrus.Fields{
 				"user":      ctx.User(),
 				"sessionID": ctx.SessionID(),
+				"display":   display,
 				"error":     err,
 			}).Error("Failed to connect to local X11 server")
 		}
@@ -191,37 +248,25 @@ func (h *X11Handler) isX11ForwardingAllowed(ctx ssh.Context) bool {
 	return true
 }
 
-// connectToLocalX11 establishes a connection to the local X11 server.
-// Uses the DISPLAY environment variable to determine the X11 socket location.
-func (h *X11Handler) connectToLocalX11() (net.Conn, error) {
-	// Get DISPLAY environment variable
-	display := os.Getenv("DISPLAY")
-	if display == "" {
-		return nil, fmt.Errorf("DISPLAY environment variable not set")
-	}
-
-	// Parse display using the correct ParseDisplayNumber function
-	host, displayNum, _, err := ParseDisplayNumber(display)
-	if err != nil {
-		return nil, fmt.Errorf("invalid DISPLAY format %q: %w", display, err)
-	}
-
+// connectToLocalX11 establishes a connection to the local X11 server backing
+// the given session-allocated display number (see AllocateDisplay), rather
+// than the sshd process's own $DISPLAY - which has no relation to any
+// connecting client and is typically unset on a headless server.
+func (h *X11Handler) connectToLocalX11(display int) (net.Conn, error) {
 	// Connect to X11 server
 	// Try Unix socket first (most common for local connections)
-	socketPath := fmt.Sprintf("/tmp/.X11-unix/X%d", displayNum)
+	socketPath := fmt.Sprintf("/tmp/.X11-unix/X%d", display)
 	conn, err := net.Dial("unix", socketPath)
 	if err == nil {
 		return conn, nil
 	}
 
 	// Fall back to TCP connection if Unix socket fails
-	if host == "" {
-		host = "localhost"
-	}
-	tcpAddr := net.JoinHostPort(host, strconv.Itoa(6000+displayNum))
+	host := "localhost"
+	tcpAddr := net.JoinHostPort(host, strconv.Itoa(6000+display))
 	conn, err = net.Dial("tcp", tcpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to X11 server: %w", err)
+		return nil, fmt.Errorf("failed to connect to X11 server for display %d: %w", display, err)
 	}
 
 	return conn, nil

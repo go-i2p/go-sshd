@@ -5,6 +5,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/gliderlabs/ssh"
 
@@ -19,13 +20,32 @@ import (
 // Server wraps gliderlabs/ssh with OpenSSH-compatible configuration.
 // This is a thin wrapper that coordinates library functionality.
 type Server struct {
+	mu               sync.Mutex // protects config, logger, ssh, and sshErrCh below against concurrent SIGHUP reload
 	config           *config.Config
 	configFile       string // Store config file path for reload
 	ssh              *ssh.Server
+	sshErrCh         chan error // error channel for the currently-active ssh.Server; non-nil only while Start is running
 	logger           *logging.Logger
 	signalHandler    *signals.Handler
 	metricsCollector *metrics.Collector
 	metricsServer    *metrics.Server
+}
+
+// getLogger returns the current logger. Safe for concurrent use with reloadConfiguration,
+// which replaces the logger when the configuration is reloaded via SIGHUP.
+func (s *Server) getLogger() *logging.Logger {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logger
+}
+
+// getSSH returns the current gliderlabs/ssh server instance. Safe for concurrent
+// use with reloadConfiguration, which replaces the server when the configuration
+// is reloaded via SIGHUP.
+func (s *Server) getSSH() *ssh.Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ssh
 }
 
 // New creates a new SSH server with the given configuration.
@@ -244,8 +264,16 @@ func (s *Server) Start() error {
 	// Start signal handling in background
 	go s.handleSignals()
 
+	s.mu.Lock()
+	s.sshErrCh = make(chan error, 1)
+	errCh := s.sshErrCh
+	sshServer := s.ssh
+	s.mu.Unlock()
+
+	go s.runSSHServer(sshServer, errCh)
+
 	// Start the gliderlabs/ssh server with context support
-	s.logger.Info("SSH server started successfully")
+	s.getLogger().Info("SSH server started successfully")
 
 	// Wait for shutdown or error
 	return s.runServerLoop()
@@ -260,59 +288,71 @@ func (s *Server) startMetricsServer() error {
 	if err := s.metricsServer.Start(); err != nil {
 		return fmt.Errorf("failed to start metrics server: %w", err)
 	}
-	s.logger.Info("Metrics server started")
+	s.getLogger().Info("Metrics server started")
 	return nil
 }
 
-// runServerLoop runs the SSH server and waits for shutdown signal or error.
+// runServerLoop waits for a shutdown signal or an SSH server error.
+// A SIGHUP-triggered configuration reload closes the current SSH server and
+// starts a new one against a new error channel; errors reported by a
+// now-superseded generation are not treated as a fatal server error.
 func (s *Server) runServerLoop() error {
 	ctx := s.signalHandler.Context()
 
-	// Start server in a goroutine
-	serverErr := make(chan error, 1)
-	go s.runSSHServer(serverErr)
+	for {
+		s.mu.Lock()
+		errCh := s.sshErrCh
+		s.mu.Unlock()
 
-	// Wait for shutdown signal or server error
-	select {
-	case <-ctx.Done():
-		return s.handleShutdown(serverErr)
-	case err := <-serverErr:
-		if err != nil {
-			s.stopMetricsServer()
-			return err
+		select {
+		case <-ctx.Done():
+			return s.handleShutdown(errCh)
+		case err := <-errCh:
+			s.mu.Lock()
+			current := s.sshErrCh
+			s.mu.Unlock()
+			if current != errCh {
+				// This error came from a server generation that was already
+				// replaced by a configuration reload - keep running with the
+				// current generation instead of treating this as a stop.
+				continue
+			}
+			if err != nil {
+				s.stopMetricsServer()
+				return err
+			}
+			s.getLogger().Info("SSH server stopped")
+			return nil
 		}
 	}
-
-	s.logger.Info("SSH server stopped")
-	return nil
 }
 
-// runSSHServer starts the SSH listener and handles errors.
-func (s *Server) runSSHServer(serverErr chan<- error) {
-	err := s.ssh.ListenAndServe()
+// runSSHServer starts the given SSH listener and reports its outcome on errCh.
+func (s *Server) runSSHServer(sshServer *ssh.Server, errCh chan<- error) {
+	err := sshServer.ListenAndServe()
 	if err != nil && err != ssh.ErrServerClosed {
-		serverErr <- fmt.Errorf("server error: %w", err)
+		errCh <- fmt.Errorf("server error: %w", err)
 	} else {
-		serverErr <- nil
+		errCh <- nil
 	}
 }
 
 // handleShutdown gracefully stops the server and metrics server.
-func (s *Server) handleShutdown(serverErr <-chan error) error {
-	s.logger.Info("Received shutdown signal, stopping server...")
+func (s *Server) handleShutdown(errCh <-chan error) error {
+	s.getLogger().Info("Received shutdown signal, stopping server...")
 
 	// Gracefully close the server
-	if err := s.ssh.Close(); err != nil {
-		s.logger.Errorf("Error closing server: %v", err)
+	if err := s.getSSH().Close(); err != nil {
+		s.getLogger().Errorf("Error closing server: %v", err)
 	}
 
 	// Stop metrics server if running
 	s.stopMetricsServer()
 
 	// Wait for server to actually stop
-	<-serverErr
+	<-errCh
 
-	s.logger.Info("SSH server stopped")
+	s.getLogger().Info("SSH server stopped")
 	return nil
 }
 
@@ -320,7 +360,7 @@ func (s *Server) handleShutdown(serverErr <-chan error) error {
 func (s *Server) stopMetricsServer() {
 	if s.metricsServer != nil {
 		if err := s.metricsServer.Stop(); err != nil {
-			s.logger.Errorf("Error stopping metrics server: %v", err)
+			s.getLogger().Errorf("Error stopping metrics server: %v", err)
 		}
 	}
 }
@@ -335,17 +375,23 @@ func (s *Server) handleSignals() {
 			return
 		}
 
-		s.logger.Infof("Received %s signal, reloading configuration...", sig)
+		s.getLogger().Infof("Received %s signal, reloading configuration...", sig)
 		if err := s.reloadConfiguration(); err != nil {
-			s.logger.Errorf("Failed to reload configuration: %v", err)
+			s.getLogger().Errorf("Failed to reload configuration: %v", err)
 		} else {
-			s.logger.Info("Configuration reloaded successfully")
+			s.getLogger().Info("Configuration reloaded successfully")
 		}
 	}
 }
 
-// reloadConfiguration reloads the server configuration from the config file.
-// This method is called when SIGHUP is received, allowing dynamic configuration updates.
+// reloadConfiguration reloads the server configuration from the config file and
+// rebuilds the SSH server (host keys, authentication, session, forwarding,
+// agent, and X11 handlers) from it, matching initializeSSHServer. If the
+// server is currently running, the previous SSH listener is closed and a new
+// one is started against the rebuilt server so that subsequent connections
+// are evaluated against the newly loaded configuration; connections already
+// in flight continue to run under the handlers that were active when they
+// were accepted.
 func (s *Server) reloadConfiguration() error {
 	if s.configFile == "" {
 		return fmt.Errorf("no config file specified for reload")
@@ -357,29 +403,44 @@ func (s *Server) reloadConfiguration() error {
 		return fmt.Errorf("failed to load new configuration: %w", err)
 	}
 
-	// Update logger configuration first (this is safe to do while server is running)
+	// Create a new logger from the new configuration
 	newLogger, err := logging.NewLogger(newConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create new logger: %w", err)
 	}
 
-	// Store old config and logger for rollback if needed
-	oldConfig := s.config
-	oldLogger := s.logger
+	// Rebuild the SSH server (host keys, auth, session, forwarding, agent,
+	// X11 handlers) against the new configuration/logger, using a throwaway
+	// Server value so initializeSSHServer's existing logic can be reused
+	// without touching the live server until the rebuild has succeeded.
+	builder := &Server{config: newConfig, logger: newLogger}
+	if err := builder.initializeSSHServer(); err != nil {
+		return fmt.Errorf("failed to rebuild SSH server with new configuration: %w", err)
+	}
 
-	// Update configuration and logger
+	s.mu.Lock()
+	oldSSHServer := s.ssh
+	wasRunning := s.sshErrCh != nil
 	s.config = newConfig
 	s.logger = newLogger
+	s.ssh = builder.ssh
+	var newErrCh chan error
+	if wasRunning {
+		newErrCh = make(chan error, 1)
+		s.sshErrCh = newErrCh
+	}
+	s.mu.Unlock()
 
-	s.logger.Info("Configuration reloaded - server restart required for some changes to take effect")
-	s.logger.Info("To apply all configuration changes, restart the server")
+	newLogger.Info("Configuration reloaded - new connections will use the updated configuration")
 
-	// Note: For full configuration reload (including port changes, host keys, etc),
-	// a server restart is required. This implementation only reloads logger settings
-	// which can be changed dynamically. Future enhancement could add more dynamic reload capabilities.
-
-	_ = oldConfig // Keep for potential rollback logic
-	_ = oldLogger // Keep for potential rollback logic
+	if wasRunning {
+		go s.runSSHServer(builder.ssh, newErrCh)
+		if oldSSHServer != nil {
+			if err := oldSSHServer.Close(); err != nil {
+				newLogger.Warnf("Error closing previous SSH server during reload: %v", err)
+			}
+		}
+	}
 
 	return nil
 }
@@ -387,31 +448,31 @@ func (s *Server) reloadConfiguration() error {
 // Stop gracefully stops the SSH server and cleans up resources.
 // This method can be called programmatically to shutdown the server.
 func (s *Server) Stop() error {
-	s.logger.Info("Stopping SSH server...")
+	s.getLogger().Info("Stopping SSH server...")
 
 	// Trigger shutdown
 	s.signalHandler.Shutdown()
 
 	// Close the SSH server
-	if s.ssh != nil {
-		if err := s.ssh.Close(); err != nil {
-			s.logger.Errorf("Error closing SSH server: %v", err)
+	if sshServer := s.getSSH(); sshServer != nil {
+		if err := sshServer.Close(); err != nil {
+			s.getLogger().Errorf("Error closing SSH server: %v", err)
 		}
 	}
 
 	// Stop metrics server if running
 	if s.metricsServer != nil {
 		if err := s.metricsServer.Stop(); err != nil {
-			s.logger.Errorf("Error stopping metrics server: %v", err)
+			s.getLogger().Errorf("Error stopping metrics server: %v", err)
 		} else {
-			s.logger.Info("Metrics server stopped")
+			s.getLogger().Info("Metrics server stopped")
 		}
 	}
 
 	// Stop signal handler
 	s.signalHandler.Stop()
 
-	s.logger.Info("SSH server stopped")
+	s.getLogger().Info("SSH server stopped")
 	return nil
 }
 

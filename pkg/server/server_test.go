@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -201,20 +202,23 @@ func TestSignalHandling(t *testing.T) {
 }
 
 func TestConfigurationReload(t *testing.T) {
-	configContent := `
+	// Reload now actually rebuilds the SSH server (including host keys) from
+	// the config file, so point HostKey at a writable temp location instead
+	// of the real /etc/ssh paths (which are not readable/writable in test
+	// environments) to avoid a filesystem dependency.
+	hostKeyPath := filepath.Join(t.TempDir(), "host_ed25519_key")
+	configContent := fmt.Sprintf(`
 Port 2224
 PasswordAuthentication yes
 LogLevel INFO
-`
+HostKey %s
+`, hostKeyPath)
 	configFile := createTempConfig(t, configContent)
 
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-
-	// Override host keys to empty for testing (avoid file system dependencies)
-	cfg.HostKey = []string{}
 
 	server, err := NewWithConfigFile(cfg, configFile)
 	if err != nil {
@@ -228,11 +232,12 @@ LogLevel INFO
 	}
 
 	// Update config file
-	newConfigContent := `
+	newConfigContent := fmt.Sprintf(`
 Port 2224
 PasswordAuthentication yes
 LogLevel DEBUG
-`
+HostKey %s
+`, hostKeyPath)
 	if err := os.WriteFile(configFile, []byte(newConfigContent), 0o644); err != nil {
 		t.Fatalf("Failed to update config file: %v", err)
 	}
@@ -245,6 +250,132 @@ LogLevel DEBUG
 	// Verify config was reloaded
 	if server.config.LogLevel != "DEBUG" {
 		t.Errorf("Log level not updated after reload: got %s, want DEBUG", server.config.LogLevel)
+	}
+}
+
+// TestConfigurationReloadUpdatesRunningServer is a regression test for the
+// SIGHUP-reload-has-no-effect bug: reloading configuration while the server
+// is actively running must rebuild and swap in a new SSH server (not just
+// update the config/logger struct fields), so that a subsequently changed
+// policy (e.g. PasswordAuthentication) actually takes effect.
+func TestConfigurationReloadUpdatesRunningServer(t *testing.T) {
+	hostKeyPath := filepath.Join(t.TempDir(), "host_ed25519_key")
+	configContent := fmt.Sprintf(`
+Port 2227
+PasswordAuthentication yes
+LogLevel ERROR
+HostKey %s
+`, hostKeyPath)
+	configFile := createTempConfig(t, configContent)
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	server, err := NewWithConfigFile(cfg, configFile)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+	defer server.Stop()
+
+	firstSSH := server.getSSH()
+	if firstSSH == nil {
+		t.Fatal("Expected an initialized SSH server before reload")
+	}
+
+	newConfigContent := fmt.Sprintf(`
+Port 2227
+PasswordAuthentication no
+LogLevel ERROR
+HostKey %s
+`, hostKeyPath)
+	if err := os.WriteFile(configFile, []byte(newConfigContent), 0o644); err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+
+	if err := server.reloadConfiguration(); err != nil {
+		t.Fatalf("Failed to reload configuration: %v", err)
+	}
+
+	if server.config.PasswordAuthentication {
+		t.Error("Expected PasswordAuthentication to be disabled after reload")
+	}
+
+	reloadedSSH := server.getSSH()
+	if reloadedSSH == nil {
+		t.Fatal("Expected a rebuilt SSH server after reload")
+	}
+	if reloadedSSH == firstSSH {
+		t.Error("Expected reloadConfiguration to rebuild the SSH server instance, not reuse the old one")
+	}
+}
+
+// TestConfigurationReloadWhileRunning exercises reloadConfiguration while the
+// server is actively serving (Start running in the background), proving the
+// listener-swap logic in runServerLoop correctly keeps the server alive
+// across a reload instead of misinterpreting the old listener's shutdown as
+// a fatal stop.
+func TestConfigurationReloadWhileRunning(t *testing.T) {
+	hostKeyPath := filepath.Join(t.TempDir(), "host_ed25519_key")
+	configContent := fmt.Sprintf(`
+Port 2228
+PasswordAuthentication yes
+LogLevel ERROR
+HostKey %s
+`, hostKeyPath)
+	configFile := createTempConfig(t, configContent)
+
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.Port = 0 // Use an ephemeral port for actual listening in this test.
+
+	server, err := NewWithConfigFile(cfg, configFile)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- server.Start() }()
+
+	// Give Start time to begin serving before reloading.
+	time.Sleep(50 * time.Millisecond)
+
+	newConfigContent := fmt.Sprintf(`
+Port 2228
+PasswordAuthentication no
+LogLevel ERROR
+HostKey %s
+`, hostKeyPath)
+	if err := os.WriteFile(configFile, []byte(newConfigContent), 0o644); err != nil {
+		t.Fatalf("Failed to update config file: %v", err)
+	}
+
+	if err := server.reloadConfiguration(); err != nil {
+		t.Fatalf("Failed to reload configuration while running: %v", err)
+	}
+
+	// The server must still be running after reload, not have exited.
+	select {
+	case err := <-startErr:
+		t.Fatalf("Server unexpectedly stopped after reload: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// Expected: still running.
+	}
+
+	if err := server.Stop(); err != nil {
+		t.Fatalf("Failed to stop server: %v", err)
+	}
+
+	select {
+	case err := <-startErr:
+		if err != nil {
+			t.Errorf("Start returned an error after Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after Stop")
 	}
 }
 

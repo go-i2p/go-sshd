@@ -179,7 +179,7 @@ func isLocalhostHost(host string) bool {
 func isAllowedIPOrDomain(host string) bool {
 	ip := net.ParseIP(host)
 	if ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate() || true // Allow public IPs
+		return ip.IsLoopback() || ip.IsPrivate()
 	}
 
 	// Allow domain names (basic validation)

@@ -117,45 +117,13 @@ func TestConnectToLocalX11(t *testing.T) {
 	logger := logrus.New()
 	handler := NewX11Handler(&config.Config{}, logger)
 
-	tests := []struct {
-		name        string
-		display     string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "fail when DISPLAY not set",
-			display:     "",
-			expectError: true,
-			description: "Should fail when DISPLAY environment variable is not set",
-		},
-		{
-			name:        "fail when X11 server unavailable",
-			display:     ":999",
-			expectError: true,
-			description: "Should fail when X11 server socket does not exist",
-		},
-	}
+	// No X11 server is expected to be listening on this display number in
+	// the test environment, so this should fail for both the Unix socket
+	// and TCP fallback paths.
+	conn, err := handler.connectToLocalX11(999)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable for test
-			t.Setenv("DISPLAY", tt.display)
-
-			conn, err := handler.connectToLocalX11()
-
-			if tt.expectError {
-				assert.Error(t, err, tt.description)
-				assert.Nil(t, conn)
-			} else {
-				assert.NoError(t, err, tt.description)
-				assert.NotNil(t, conn)
-				if conn != nil {
-					conn.Close()
-				}
-			}
-		})
-	}
+	assert.Error(t, err, "Should fail when no X11 server is listening on the allocated display")
+	assert.Nil(t, conn)
 }
 
 // TestGenerateX11Cookie tests X11 cookie generation.
@@ -351,18 +319,54 @@ func TestCreateX11RequestHandler(t *testing.T) {
 				user:        "testuser",
 				permissions: tt.permissions,
 			}
+			payload := gossh.Marshal(&x11ReqPayload{
+				SingleConnection: false,
+				AuthProtocol:     "MIT-MAGIC-COOKIE-1",
+				AuthCookie:       "deadbeef",
+				ScreenNumber:     0,
+			})
 			req := &gossh.Request{
 				Type:      tt.requestType,
 				WantReply: true,
-				Payload:   []byte{1}, // Minimal payload
+				Payload:   payload,
 			}
 
-			ok, payload := requestHandler(ctx, nil, req)
+			ok, respPayload := requestHandler(ctx, nil, req)
 
 			assert.Equal(t, tt.expectOk, ok, tt.description)
-			assert.Nil(t, payload) // X11 requests don't return payload
+			assert.Nil(t, respPayload) // X11 requests don't return payload
 		})
 	}
+}
+
+// TestCreateX11RequestHandler_AllocatesSessionDisplay is a regression test
+// for the X11-forwards-to-wrong-display bug: a successful x11-req must
+// allocate a per-session display (via AllocateDisplay) and store it in the
+// session context, rather than leaving channel handling to fall back to the
+// sshd process's own $DISPLAY.
+func TestCreateX11RequestHandler_AllocatesSessionDisplay(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	cfg := &config.Config{X11Forwarding: true, X11DisplayOffset: 20}
+	handler := NewX11Handler(cfg, logger)
+	requestHandler := handler.CreateX11RequestHandler()
+
+	ctx := &x11MockContext{user: "testuser"}
+	payload := gossh.Marshal(&x11ReqPayload{
+		AuthProtocol: "MIT-MAGIC-COOKIE-1",
+		AuthCookie:   "cafef00d",
+		ScreenNumber: 0,
+	})
+	req := &gossh.Request{Type: "x11-req", WantReply: true, Payload: payload}
+
+	ok, _ := requestHandler(ctx, nil, req)
+	require.True(t, ok)
+
+	state, ok := ctx.Value(x11SessionStateKey).(*x11SessionState)
+	require.True(t, ok, "expected an *x11SessionState to be stored in the session context")
+	assert.Equal(t, 20, state.display, "allocated display should start at the configured offset")
+	assert.Equal(t, "MIT-MAGIC-COOKIE-1", state.authProtocol)
+	assert.Equal(t, "cafef00d", state.authCookie)
 }
 
 // TestCreateX11ChannelHandler tests the X11 channel handler creation.
@@ -476,7 +480,7 @@ func (m *x11MockContext) User() string          { return m.user }
 func (m *x11MockContext) SessionID() string     { return "test-session-x11" }
 func (m *x11MockContext) ClientVersion() string { return "test-client" }
 func (m *x11MockContext) ServerVersion() string { return "test-server" }
-func (m *x11MockContext) RemoteAddr() net.Addr { return &x11MockAddr{addr: "127.0.0.1:12345"} }
+func (m *x11MockContext) RemoteAddr() net.Addr  { return &x11MockAddr{addr: "127.0.0.1:12345"} }
 
 func (m *x11MockContext) LocalAddr() net.Addr           { return &x11MockAddr{addr: "127.0.0.1:22"} }
 func (m *x11MockContext) Permissions() *ssh.Permissions { return m.permissions }

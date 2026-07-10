@@ -3,12 +3,14 @@ package handlers
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/pkg/sftp"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/go-i2p/go-sshd/pkg/config"
 )
@@ -518,8 +520,87 @@ func TestSymlinkInfo(t *testing.T) {
 	assert.Equal(t, "/target/path", info.Name())
 	assert.Equal(t, int64(0), info.Size())
 	assert.Equal(t, os.ModeSymlink, info.Mode())
+	assert.Equal(t, time.Time{}, info.ModTime())
 	assert.False(t, info.IsDir())
 	assert.Nil(t, info.Sys())
+}
+
+// TestFileWrapper_Close verifies fileWrapper.Close closes the underlying
+// file exactly once, even when called multiple times.
+func TestFileWrapper_Close(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrapped.txt")
+	f, err := os.Create(path)
+	require.NoError(t, err)
+
+	wrapper := &fileWrapper{File: f}
+
+	assert.NoError(t, wrapper.Close())
+	// A second Close must be a no-op, not an error (double-close is safe).
+	assert.NoError(t, wrapper.Close())
+}
+
+// TestApplyPermissionsChange verifies file permission changes via Setstat.
+func TestApplyPermissionsChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "perms.txt")
+	require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+
+	attrs := &sftp.FileStat{Mode: 0o600}
+	err := applyPermissionsChange(path, attrs, sftp.FileAttrFlags{Permissions: true})
+	require.NoError(t, err)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	// No flag set: no-op, must not error.
+	assert.NoError(t, applyPermissionsChange(path, attrs, sftp.FileAttrFlags{}))
+}
+
+// TestApplySizeChange verifies file truncation via Setstat.
+func TestApplySizeChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "size.txt")
+	require.NoError(t, os.WriteFile(path, []byte("hello world"), 0o644))
+
+	attrs := &sftp.FileStat{Size: 5}
+	err := applySizeChange(path, attrs, sftp.FileAttrFlags{Size: true})
+	require.NoError(t, err)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), info.Size())
+
+	assert.NoError(t, applySizeChange(path, attrs, sftp.FileAttrFlags{}))
+}
+
+// TestApplyTimeChange verifies access/modification time changes via Setstat.
+func TestApplyTimeChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "time.txt")
+	require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+
+	target := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	attrs := &sftp.FileStat{
+		Atime: uint32(target.Unix()),
+		Mtime: uint32(target.Unix()),
+	}
+	err := applyTimeChange(path, attrs, sftp.FileAttrFlags{Acmodtime: true})
+	require.NoError(t, err)
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, target.Unix(), info.ModTime().Unix())
+
+	assert.NoError(t, applyTimeChange(path, attrs, sftp.FileAttrFlags{}))
+}
+
+// TestApplyOwnershipChange verifies the no-op path when UidGid isn't requested;
+// changing ownership itself typically requires root privileges, so only the
+// no-op branch is exercised here.
+func TestApplyOwnershipChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owner.txt")
+	require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+
+	attrs := &sftp.FileStat{}
+	assert.NoError(t, applyOwnershipChange(path, attrs, sftp.FileAttrFlags{}))
 }
 
 // mockSFTPRequest helps create sftp.Request objects for testing

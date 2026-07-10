@@ -315,9 +315,12 @@ func TestIsTargetHostAllowed(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "public IP allowed",
+			// Regression test: isAllowedIPOrDomain previously had a
+			// tautological "|| true" that made this branch always allow any
+			// public IP, defeating the loopback/private-only restriction.
+			name:     "public IP not allowed",
 			host:     "8.8.8.8",
-			expected: true,
+			expected: false,
 		},
 	}
 
@@ -331,6 +334,31 @@ func TestIsTargetHostAllowed(t *testing.T) {
 
 			result := handler.isTargetHostAllowed(tt.host)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestIsAllowedIPOrDomain is a direct regression test for the tautological
+// "|| true" bug: isAllowedIPOrDomain must only allow loopback and private
+// IPs (plus syntactically valid domain names), not arbitrary public IPs.
+func TestIsAllowedIPOrDomain(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		expected bool
+	}{
+		{"loopback IPv4 allowed", "127.0.0.1", true},
+		{"loopback IPv6 allowed", "::1", true},
+		{"private IP allowed", "10.0.0.5", true},
+		{"public IP not allowed", "8.8.8.8", false},
+		{"other public IP not allowed", "1.1.1.1", false},
+		{"domain name allowed", "example.com", true},
+		{"empty host not allowed", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isAllowedIPOrDomain(tt.host))
 		})
 	}
 }

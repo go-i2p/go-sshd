@@ -705,3 +705,214 @@ func TestAuthenticateKeyboardInteractive_RootLogin(t *testing.T) {
 		})
 	}
 }
+
+// TestParseRemoteAddress tests extraction of IP and host from a remote address string.
+func TestParseRemoteAddress(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		expectIP   string
+		expectHost string
+	}{
+		{"host and port", "192.168.1.5:2222", "192.168.1.5", "192.168.1.5"},
+		{"IPv6 with port", "[::1]:2222", "::1", "::1"},
+		{"no port, bare IP", "10.0.0.1", "10.0.0.1", "10.0.0.1"},
+		{"unparseable host", "not-an-ip", "", "not-an-ip"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, host := handler.parseRemoteAddress(tt.remoteAddr)
+			if tt.expectIP == "" {
+				if ip != nil {
+					t.Errorf("expected nil IP, got %v", ip)
+				}
+			} else if ip == nil || ip.String() != tt.expectIP {
+				t.Errorf("expected IP %s, got %v", tt.expectIP, ip)
+			}
+			if host != tt.expectHost {
+				t.Errorf("expected host %q, got %q", tt.expectHost, host)
+			}
+		})
+	}
+}
+
+// TestMatchCIDRPattern tests CIDR-based source address matching.
+func TestMatchCIDRPattern(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	tests := []struct {
+		name     string
+		pattern  string
+		ip       string
+		expected bool
+	}{
+		{"matching CIDR", "192.168.1.0/24", "192.168.1.42", true},
+		{"non-matching CIDR", "192.168.1.0/24", "10.0.0.1", false},
+		{"not a CIDR pattern", "192.168.1.1", "192.168.1.1", false},
+		{"invalid CIDR pattern", "not-a-cidr/24", "192.168.1.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			result := handler.matchCIDRPattern(tt.pattern, ip, tt.ip, "testuser")
+			if result != tt.expected {
+				t.Errorf("matchCIDRPattern(%q, %s) = %v, want %v", tt.pattern, tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestMatchIPPattern tests direct IP address matching.
+func TestMatchIPPattern(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	tests := []struct {
+		name     string
+		pattern  string
+		ip       string
+		expected bool
+	}{
+		{"exact match", "192.168.1.1", "192.168.1.1", true},
+		{"no match", "192.168.1.1", "192.168.1.2", false},
+		{"pattern not an IP", "not-an-ip", "192.168.1.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			result := handler.matchIPPattern(tt.pattern, ip, tt.ip, "testuser")
+			if result != tt.expected {
+				t.Errorf("matchIPPattern(%q, %s) = %v, want %v", tt.pattern, tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestMatchHostnamePattern tests basic hostname pattern matching.
+func TestMatchHostnamePattern(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	if !handler.matchHostnamePattern("host.example.com", "host.example.com", "testuser") {
+		t.Error("expected exact hostname match to succeed")
+	}
+	if handler.matchHostnamePattern("host.example.com", "other.example.com", "testuser") {
+		t.Error("expected mismatched hostname to fail")
+	}
+}
+
+// TestValidateSourceAddress tests the combined "from" option validation logic.
+func TestValidateSourceAddress(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		patterns   []string
+		expected   bool
+	}{
+		{"matches CIDR pattern", "192.168.1.10:2222", []string{"192.168.1.0/24"}, true},
+		{"matches direct IP pattern", "10.0.0.5:2222", []string{"10.0.0.5"}, true},
+		{"no pattern matches", "10.0.0.5:2222", []string{"192.168.1.0/24", "1.2.3.4"}, false},
+		{"unparseable remote address", "not-an-ip:2222", []string{"192.168.1.0/24"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := handler.validateSourceAddress(tt.remoteAddr, tt.patterns, "testuser")
+			if result != tt.expected {
+				t.Errorf("validateSourceAddress(%q, %v) = %v, want %v", tt.remoteAddr, tt.patterns, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsPublicKeyAuthEnabled tests the public-key-auth-enabled gate.
+func TestIsPublicKeyAuthEnabled(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+
+	handler := NewAuthHandler(&config.Config{PubkeyAuthentication: true}, logger)
+	if !handler.isPublicKeyAuthEnabled("testuser") {
+		t.Error("expected public key auth to be enabled")
+	}
+
+	disabled := NewAuthHandler(&config.Config{PubkeyAuthentication: false}, logger)
+	if disabled.isPublicKeyAuthEnabled("testuser") {
+		t.Error("expected public key auth to be disabled")
+	}
+}
+
+// TestCheckUserAuthorization tests the combined user/group/root authorization gate.
+func TestCheckUserAuthorization(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+
+	t.Run("allowed by default", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{}, logger)
+		if !handler.checkUserAuthorization("testuser", "127.0.0.1:1234", "publickey") {
+			t.Error("expected user to be authorized by default")
+		}
+	})
+
+	t.Run("denied by DenyUsers", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{DenyUsers: []string{"testuser"}}, logger)
+		if handler.checkUserAuthorization("testuser", "127.0.0.1:1234", "publickey") {
+			t.Error("expected user to be denied via DenyUsers")
+		}
+	})
+
+	t.Run("root denied by PermitRootLogin=no", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{PermitRootLogin: "no"}, logger)
+		if handler.checkUserAuthorization("root", "127.0.0.1:1234", "publickey") {
+			t.Error("expected root to be denied when PermitRootLogin=no")
+		}
+	})
+}
+
+// TestValidateRootForcedCommand tests the forced-commands-only requirement for root.
+func TestValidateRootForcedCommand(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+
+	t.Run("non-root-restricted user always allowed", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{PermitRootLogin: "yes"}, logger)
+		ctx := newAuthMockContext("testuser")
+		if !handler.validateRootForcedCommand("testuser", ctx) {
+			t.Error("expected non-restricted user to pass")
+		}
+	})
+
+	t.Run("root denied without command= option", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{PermitRootLogin: "forced-commands-only"}, logger)
+		ctx := newAuthMockContext("root")
+		if handler.validateRootForcedCommand("root", ctx) {
+			t.Error("expected root without command= restriction to be denied")
+		}
+	})
+
+	t.Run("root allowed with command= option", func(t *testing.T) {
+		handler := NewAuthHandler(&config.Config{PermitRootLogin: "forced-commands-only"}, logger)
+		ctx := newAuthMockContext("root")
+		ctx.SetValue(ContextKeyAuthorizedKeyOptions, &AuthorizedKeyOptions{Command: "/usr/bin/backup"})
+		if !handler.validateRootForcedCommand("root", ctx) {
+			t.Error("expected root with command= restriction to be allowed")
+		}
+	})
+}
+
+// TestLogPublicKeyResult exercises both branches of the result-logging helper.
+// It has no observable return value; this simply ensures it doesn't panic
+// and covers both the success and failure branches.
+func TestLogPublicKeyResult(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	handler := NewAuthHandler(&config.Config{}, logger)
+
+	handler.logPublicKeyResult("testuser", true)
+	handler.logPublicKeyResult("testuser", false)
+}
