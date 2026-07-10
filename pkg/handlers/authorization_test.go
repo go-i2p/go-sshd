@@ -682,3 +682,45 @@ func TestParseAuthorizedKeyOptions_InvalidKey(t *testing.T) {
 		t.Error("Expected error for invalid key type")
 	}
 }
+
+// TestParseAuthorizedKeyOptions_BareRestrictKeyword is a regression test:
+// standard OpenSSH options like a bare "restrict" (or "cert-authority",
+// "no-touch-required", "verify-required") don't contain "=" and aren't in
+// any fixed keyword substring list, so a naive heuristic based on matching
+// specific option keywords would fail to recognize this line as having
+// options at all, misparsing "restrict" itself as if it were the key type
+// and causing the whole entry to be rejected downstream.
+func TestParseAuthorizedKeyOptions_BareRestrictKeyword(t *testing.T) {
+	line := `restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@host`
+	keyPart, options, err := ParseAuthorizedKeyOptions(line)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(keyPart, "ssh-ed25519") {
+		t.Errorf("Expected key part to start with ssh-ed25519, got %q", keyPart)
+	}
+
+	if options == nil {
+		t.Fatal("Expected options struct to be created")
+	}
+}
+
+// TestParseAuthorizedKeyOptions_RestrictWithOtherOptions verifies "restrict"
+// combined with a recognized keyword (e.g. via comma) still parses
+// correctly, and that the recognized keyword's effect is applied.
+func TestParseAuthorizedKeyOptions_RestrictWithOtherOptions(t *testing.T) {
+	line := `restrict,pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@host`
+	keyPart, options, err := ParseAuthorizedKeyOptions(line)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(keyPart, "ssh-ed25519") {
+		t.Errorf("Expected key part to start with ssh-ed25519, got %q", keyPart)
+	}
+
+	if !options.PTY {
+		t.Error("Expected pty option to be set")
+	}
+}
