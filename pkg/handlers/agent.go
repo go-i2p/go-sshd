@@ -1,13 +1,11 @@
 // Package handlers provides SSH protocol handlers for authentication, sessions, and subsystems.
-// This file implements SSH agent forwarding using golang.org/x/crypto/ssh/agent.
+// This file implements SSH agent forwarding using gliderlabs/ssh's built-in
+// server-side agent forwarding support (ssh.NewAgentListener /
+// ssh.ForwardAgentConnections), which correctly opens auth-agent@openssh.com
+// channels toward the client, matching the OpenSSH protocol direction.
 package handlers
 
 import (
-	"fmt"
-	"io"
-	"net"
-	"os"
-
 	"github.com/gliderlabs/ssh"
 	"github.com/sirupsen/logrus"
 	gossh "golang.org/x/crypto/ssh"
@@ -40,45 +38,22 @@ func (h *AgentHandler) logf(level logrus.Level, format string, args ...interface
 	h.logger.Logf(level, format, args...)
 }
 
-// CreateAgentForwardingHandler creates an SSH agent forwarding channel handler.
-// This handler processes auth-agent@openssh.com channel requests following OpenSSH protocol.
+// CreateAgentForwardingHandler creates a defensive handler for inbound
+// auth-agent@openssh.com channel-open requests.
+//
+// Per the SSH agent-forwarding protocol, the roles are the opposite of what
+// registering a ChannelHandler for this type implies: it is the SERVER that
+// opens auth-agent@openssh.com channels (via gossh.Conn.OpenChannel, see
+// setupAgentForwarding/ssh.ForwardAgentConnections) whenever something on
+// the server side wants to reach the client's forwarded agent; the CLIENT
+// is the one that accepts those inbound channel-opens. A standards-compliant
+// client never sends this server a channel-open of this type, so any
+// inbound request here is either a misbehaving/malicious client or a
+// misconfigured peer - it is rejected and logged rather than serviced.
 func (h *AgentHandler) CreateAgentForwardingHandler() ssh.ChannelHandler {
 	return func(srv *ssh.Server, conn *gossh.ServerConn, newCh gossh.NewChannel, ctx ssh.Context) {
-		user := ctx.User()
-		h.logf(logrus.InfoLevel, "Agent forwarding channel request from user %s", user)
-
-		// Check if agent forwarding is allowed by configuration
-		if !h.isAgentForwardingAllowed(ctx) {
-			h.logf(logrus.WarnLevel, "Agent forwarding denied for user %s", user)
-			_ = newCh.Reject(gossh.Prohibited, "agent forwarding disabled")
-			return
-		}
-
-		// Accept the channel
-		channel, requests, err := newCh.Accept()
-		if err != nil {
-			h.logf(logrus.ErrorLevel, "Failed to accept agent forwarding channel for user %s: %v", user, err)
-			return
-		}
-
-		h.logf(logrus.InfoLevel, "Agent forwarding channel established for user %s", user)
-
-		// Connect to local SSH agent
-		agentConn, err := h.connectToLocalAgent()
-		if err != nil {
-			h.logf(logrus.ErrorLevel, "Failed to connect to local SSH agent for user %s: %v", user, err)
-			_ = channel.Close()
-			return
-		}
-
-		// Handle channel in background. handleAgentChannel owns the lifetime of
-		// both channel and agentConn and closes them itself once forwarding
-		// completes - closing them here would race with (and break) the copy
-		// goroutines it starts.
-		go h.handleAgentChannel(channel, agentConn, user)
-
-		// Discard requests on this channel (agent channels don't typically have requests)
-		go gossh.DiscardRequests(requests)
+		h.logf(logrus.WarnLevel, "Rejecting unexpected inbound auth-agent@openssh.com channel-open from user %s: the server, not the client, is expected to open this channel type", ctx.User())
+		_ = newCh.Reject(gossh.Prohibited, "server does not accept inbound agent channels")
 	}
 }
 
@@ -102,71 +77,38 @@ func (h *AgentHandler) isAgentForwardingAllowed(ctx ssh.Context) bool {
 	return true
 }
 
-// connectToLocalAgent establishes a connection to the local SSH agent.
-// This connects to the SSH_AUTH_SOCK socket following OpenSSH conventions.
-func (h *AgentHandler) connectToLocalAgent() (net.Conn, error) {
-	// Get SSH agent socket path from environment
-	authSock := os.Getenv("SSH_AUTH_SOCK")
-	if authSock == "" {
-		return nil, fmt.Errorf("SSH_AUTH_SOCK not set - no agent available")
+// setupAgentForwarding prepares real SSH agent forwarding for an
+// established session, if the client requested it via
+// auth-agent-req@openssh.com (recorded by CreateAgentRequestHandler via
+// ssh.SetAgentRequested). It delegates the actual forwarding protocol to
+// gliderlabs/ssh's own ssh.NewAgentListener/ssh.ForwardAgentConnections,
+// which correctly implement the server side: opening
+// auth-agent@openssh.com channels toward the client for each connection
+// accepted on a per-session Unix socket.
+//
+// It returns the SSH_AUTH_SOCK path to expose to the spawned shell/forced
+// command, and a cleanup function that must run (e.g. via defer) when the
+// session ends to stop forwarding and remove the temporary socket. If
+// forwarding was not requested, or the listener cannot be created, it
+// returns ("", a no-op cleanup) and the session proceeds exactly as if
+// agent forwarding were absent.
+func setupAgentForwarding(s ssh.Session, logger *logrus.Logger) (string, func()) {
+	noop := func() {}
+	if !ssh.AgentRequested(s) {
+		return "", noop
 	}
 
-	// Connect to the Unix domain socket
-	conn, err := net.Dial("unix", authSock)
+	l, err := ssh.NewAgentListener()
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to SSH agent socket %s: %w", authSock, err)
+		if logger != nil {
+			logger.Warnf("Failed to create agent forwarding listener for user %s: %v", s.User(), err)
+		}
+		return "", noop
 	}
 
-	return conn, nil
-}
+	go ssh.ForwardAgentConnections(l, s)
 
-// handleAgentChannel handles bidirectional communication between SSH channel and local agent.
-// This function copies data between the SSH channel and agent connection using standard Go patterns.
-// It owns the lifetime of both channel and agentConn and closes them when forwarding ends.
-func (h *AgentHandler) handleAgentChannel(channel gossh.Channel, agentConn net.Conn, user string) {
-	defer channel.Close()
-	defer agentConn.Close()
-
-	h.logf(logrus.DebugLevel, "Starting agent forwarding proxy for user %s", user)
-
-	// Create error channel to handle goroutine completion
-	done := make(chan error, 2)
-
-	// Copy data from channel to agent
-	go func() {
-		_, err := h.copyData(agentConn, channel, "channel->agent", user)
-		done <- err
-	}()
-
-	// Copy data from agent to channel
-	go func() {
-		_, err := h.copyData(channel, agentConn, "agent->channel", user)
-		done <- err
-	}()
-
-	// Wait for either direction to complete or error
-	err := <-done
-	if err != nil {
-		h.logf(logrus.DebugLevel, "Agent forwarding ended for user %s: %v", user, err)
-	} else {
-		h.logf(logrus.DebugLevel, "Agent forwarding completed for user %s", user)
-	}
-}
-
-// copyData copies data between two connections with logging.
-// Uses standard io.Copy pattern for efficient data transfer.
-func (h *AgentHandler) copyData(dst, src io.ReadWriter, direction, user string) (int64, error) {
-	h.logf(logrus.DebugLevel, "Starting data copy %s for user %s", direction, user)
-
-	// Use io.Copy for efficient data transfer
-	n, err := io.Copy(dst, src)
-	if err != nil {
-		h.logf(logrus.DebugLevel, "Data copy %s for user %s ended with error: %v", direction, user, err)
-	} else {
-		h.logf(logrus.DebugLevel, "Data copy %s for user %s completed, transferred %d bytes", direction, user, n)
-	}
-
-	return n, err
+	return l.Addr().String(), func() { _ = l.Close() }
 }
 
 // CreateAgentRequestHandler creates a handler for agent forwarding requests.
@@ -181,6 +123,11 @@ func (h *AgentHandler) CreateAgentRequestHandler() ssh.RequestHandler {
 			h.logf(logrus.WarnLevel, "Agent forwarding request denied for user %s", user)
 			return false, nil
 		}
+
+		// Record that the client requested forwarding so the session
+		// handler (see setupAgentForwarding, called from shell.go) knows to
+		// set up a listener and SSH_AUTH_SOCK for this session.
+		ssh.SetAgentRequested(ctx)
 
 		h.logf(logrus.InfoLevel, "Agent forwarding request approved for user %s", user)
 		return true, nil

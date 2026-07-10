@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,11 +96,7 @@ func TestIsAgentForwardingAllowed(t *testing.T) {
 			logger := logrus.New()
 			handler := NewAgentHandler(tt.config, logger)
 
-			// Create mock context using existing mockContext from forwarding_test.go
-			ctx := &agentMockContext{
-				user:        "testuser",
-				permissions: tt.permissions,
-			}
+			ctx := newAgentMockContext("testuser", tt.permissions)
 
 			result := handler.isAgentForwardingAllowed(ctx)
 			assert.Equal(t, tt.expectAllow, result, tt.description)
@@ -109,73 +104,9 @@ func TestIsAgentForwardingAllowed(t *testing.T) {
 	}
 }
 
-// TestConnectToLocalAgent tests the local agent connection logic.
-func TestConnectToLocalAgent(t *testing.T) {
-	logger := logrus.New()
-	handler := NewAgentHandler(&config.Config{}, logger)
-
-	tests := []struct {
-		name        string
-		authSock    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "fail when SSH_AUTH_SOCK not set",
-			authSock:    "",
-			expectError: true,
-			description: "Should fail when SSH_AUTH_SOCK environment variable is not set",
-		},
-		{
-			name:        "fail when socket does not exist",
-			authSock:    "/nonexistent/socket",
-			expectError: true,
-			description: "Should fail when SSH agent socket does not exist",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable for test
-			if tt.authSock != "" {
-				t.Setenv("SSH_AUTH_SOCK", tt.authSock)
-			} else {
-				t.Setenv("SSH_AUTH_SOCK", "")
-			}
-
-			conn, err := handler.connectToLocalAgent()
-
-			if tt.expectError {
-				assert.Error(t, err, tt.description)
-				assert.Nil(t, conn)
-			} else {
-				assert.NoError(t, err, tt.description)
-				assert.NotNil(t, conn)
-				if conn != nil {
-					conn.Close()
-				}
-			}
-		})
-	}
-}
-
-// TestCopyData tests the data copying functionality.
-func TestCopyData(t *testing.T) {
-	logger := logrus.New()
-	handler := NewAgentHandler(&config.Config{}, logger)
-
-	testData := []byte("test data for copying")
-	src := &agentMockConn{readData: testData}
-	dst := &agentMockConn{}
-
-	n, err := handler.copyData(dst, src, "test->direction", "testuser")
-
-	assert.NoError(t, err)
-	assert.Equal(t, int64(len(testData)), n)
-	assert.Equal(t, testData, dst.writeData)
-}
-
-// TestCreateAgentRequestHandler tests the agent forwarding request handler.
+// TestCreateAgentRequestHandler tests the agent forwarding request handler,
+// including that approval records the request via ssh.SetAgentRequested so
+// setupAgentForwarding (see shell.go) knows to provision SSH_AUTH_SOCK.
 func TestCreateAgentRequestHandler(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -225,11 +156,7 @@ func TestCreateAgentRequestHandler(t *testing.T) {
 			handler := NewAgentHandler(tt.config, logger)
 			requestHandler := handler.CreateAgentRequestHandler()
 
-			// Create mock context and request
-			ctx := &agentMockContext{
-				user:        "testuser",
-				permissions: tt.permissions,
-			}
+			ctx := newAgentMockContext("testuser", tt.permissions)
 			req := &gossh.Request{
 				Type:      "auth-agent-req@openssh.com",
 				WantReply: true,
@@ -239,101 +166,73 @@ func TestCreateAgentRequestHandler(t *testing.T) {
 
 			assert.Equal(t, tt.expectOk, ok, tt.description)
 			assert.Nil(t, payload) // Agent requests don't return payload
+			assert.Equal(t, tt.expectOk, ssh.AgentRequested(newFakeSession(ctx)), "ssh.AgentRequested should reflect whether the request was approved")
 		})
 	}
 }
 
-// TestCreateAgentForwardingHandler tests the agent forwarding channel handler creation.
-func TestCreateAgentForwardingHandler(t *testing.T) {
-	logger := logrus.New()
-	config := &config.Config{
-		AllowAgentForwarding: true,
-	}
-	handler := NewAgentHandler(config, logger)
-
-	channelHandler := handler.CreateAgentForwardingHandler()
-	assert.NotNil(t, channelHandler)
-
-	// Note: Full integration testing of the channel handler would require
-	// more complex mocking of the SSH session and agent socket.
-	// This test verifies that the handler can be created successfully.
-}
-
-// mockGosshChannel wraps a net.Conn (e.g. one side of a net.Pipe) to satisfy
-// the gossh.Channel interface, so handleAgentChannel can be exercised with a
-// real, concurrently-readable/writable connection instead of a hand-rolled
-// buffer mock.
-type mockGosshChannel struct {
-	net.Conn
-	closed atomic.Bool
-}
-
-func (c *mockGosshChannel) Close() error {
-	c.closed.Store(true)
-	return c.Conn.Close()
-}
-
-func (c *mockGosshChannel) CloseWrite() error { return nil }
-
-func (c *mockGosshChannel) SendRequest(name string, wantReply bool, payload []byte) (bool, error) {
-	return false, nil
-}
-
-func (c *mockGosshChannel) Stderr() io.ReadWriter { return nil }
-
-// TestHandleAgentChannel_FullDuplexForwarding is a regression test for the
-// premature-close bug: CreateAgentForwardingHandler used to defer-close the
-// channel and agent connection in the outer closure, right after launching
-// handleAgentChannel's copy goroutines, tearing down both connections before
-// any data could be forwarded. This test exercises handleAgentChannel
-// directly and proves bytes flow in both directions, and that the
-// connections are only closed once forwarding actually ends.
-func TestHandleAgentChannel_FullDuplexForwarding(t *testing.T) {
+// TestCreateAgentForwardingHandler_RejectsInboundChannel is a regression
+// test for CRIT-3: registering a ChannelHandler for auth-agent@openssh.com
+// used to wait to *receive* an inbound channel-open of that type from the
+// client - a direction no standards-compliant client ever uses (the server
+// is supposed to be the one opening these channels toward the client, via
+// setupAgentForwarding/ssh.ForwardAgentConnections). The handler must now
+// defensively reject any such inbound channel rather than servicing it.
+func TestCreateAgentForwardingHandler_RejectsInboundChannel(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
-	handler := NewAgentHandler(&config.Config{}, logger)
+	handler := NewAgentHandler(&config.Config{AllowAgentForwarding: true}, logger)
 
-	// channelConn/channelPeer simulates the SSH channel side of the proxy;
-	// agentConn/agentPeer simulates the local SSH agent socket side.
-	channelConn, channelPeer := net.Pipe()
-	agentConn, agentPeer := net.Pipe()
-	channel := &mockGosshChannel{Conn: channelConn}
+	channelHandler := handler.CreateAgentForwardingHandler()
+	require.NotNil(t, channelHandler)
 
-	done := make(chan struct{})
-	go func() {
-		handler.handleAgentChannel(channel, agentConn, "testuser")
-		close(done)
-	}()
+	newCh := &fakeNewChannel{}
+	ctx := newAgentMockContext("testuser", nil)
 
-	// Client -> agent: bytes written on the channel peer must reach the
-	// agent peer.
-	clientMsg := []byte("client->agent request")
-	go func() { _, _ = channelPeer.Write(clientMsg) }()
-	gotFromClient := make([]byte, len(clientMsg))
-	_, err := io.ReadFull(agentPeer, gotFromClient)
-	require.NoError(t, err)
-	assert.Equal(t, clientMsg, gotFromClient)
+	channelHandler(nil, nil, newCh, ctx)
 
-	// Agent -> client: bytes written on the agent peer must reach the
-	// channel peer.
-	agentMsg := []byte("agent->client response")
-	go func() { _, _ = agentPeer.Write(agentMsg) }()
-	gotFromAgent := make([]byte, len(agentMsg))
-	_, err = io.ReadFull(channelPeer, gotFromAgent)
-	require.NoError(t, err)
-	assert.Equal(t, agentMsg, gotFromAgent)
+	assert.True(t, newCh.rejected, "inbound auth-agent@openssh.com channel-open must be rejected")
+	assert.Equal(t, gossh.Prohibited, newCh.rejectReason)
+}
 
-	// Closing one peer ends the copy loop; handleAgentChannel must then
-	// close both the channel and the agent connection itself.
-	_ = channelPeer.Close()
+// TestSetupAgentForwarding_NotRequested verifies that sessions which never
+// requested agent forwarding get no SSH_AUTH_SOCK and a no-op cleanup.
+func TestSetupAgentForwarding_NotRequested(t *testing.T) {
+	ctx := newAgentMockContext("testuser", nil)
+	sess := newFakeSession(ctx)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handleAgentChannel did not return after peer closed")
-	}
+	sock, cleanup := setupAgentForwarding(sess, logrus.New())
 
-	assert.True(t, channel.closed.Load(), "handleAgentChannel must close the channel when forwarding ends")
+	assert.Empty(t, sock)
+	require.NotNil(t, cleanup)
+	assert.NotPanics(t, cleanup)
+}
+
+// TestSetupAgentForwarding_Requested is a regression test for CRIT-3: once
+// CreateAgentRequestHandler approves forwarding (recording it via
+// ssh.SetAgentRequested), setupAgentForwarding must provision a real,
+// connectable per-session Unix socket to expose as SSH_AUTH_SOCK, and the
+// returned cleanup function must close it.
+func TestSetupAgentForwarding_Requested(t *testing.T) {
+	ctx := newAgentMockContext("testuser", nil)
+	ctx.setValue(ssh.ContextKeyConn, &fakeGosshConn{})
+	ssh.SetAgentRequested(ctx)
+	sess := newFakeSession(ctx)
+
+	sock, cleanup := setupAgentForwarding(sess, logrus.New())
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	require.NotEmpty(t, sock, "SSH_AUTH_SOCK path should be provisioned once agent forwarding was requested")
+
+	// The returned path must be a live, connectable Unix socket.
+	conn, err := net.DialTimeout("unix", sock, time.Second)
+	require.NoError(t, err, "SSH_AUTH_SOCK path should be a connectable unix socket")
+	_ = conn.Close()
+
+	cleanup()
+	_, err = net.DialTimeout("unix", sock, time.Second)
+	assert.Error(t, err, "socket should be removed/closed after cleanup")
 }
 
 // TestAgentHandlerErrorCases tests various error conditions.
@@ -362,7 +261,7 @@ func TestCreateAgentRequestHandler_NilLoggerDoesNotPanic(t *testing.T) {
 	handler := NewAgentHandler(&config.Config{AllowAgentForwarding: true}, nil)
 	requestHandler := handler.CreateAgentRequestHandler()
 
-	ctx := &agentMockContext{user: "testuser"}
+	ctx := newAgentMockContext("testuser", nil)
 	req := &gossh.Request{Type: "auth-agent-req@openssh.com", WantReply: true}
 
 	assert.NotPanics(t, func() {
@@ -370,12 +269,30 @@ func TestCreateAgentRequestHandler_NilLoggerDoesNotPanic(t *testing.T) {
 	})
 }
 
-// agentMockContext implements ssh.Context for testing agent functionality.
+// agentMockContext implements ssh.Context for testing agent functionality,
+// with a real map-backed Value/SetValue so round-tripping through
+// gliderlabs/ssh's own ssh.SetAgentRequested/ssh.AgentRequested (which use
+// an unexported context key internal to that package) works correctly.
 type agentMockContext struct {
 	context.Context
 	user        string
 	permissions *ssh.Permissions
 	mu          sync.Mutex
+	values      map[interface{}]interface{}
+}
+
+func newAgentMockContext(user string, permissions *ssh.Permissions) *agentMockContext {
+	return &agentMockContext{
+		user:        user,
+		permissions: permissions,
+		values:      make(map[interface{}]interface{}),
+	}
+}
+
+func (m *agentMockContext) setValue(key, value interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.values[key] = value
 }
 
 func (m *agentMockContext) User() string          { return m.user }
@@ -384,10 +301,21 @@ func (m *agentMockContext) ClientVersion() string { return "test-client" }
 func (m *agentMockContext) ServerVersion() string { return "test-server" }
 func (m *agentMockContext) RemoteAddr() net.Addr  { return &agentMockAddr{addr: "127.0.0.1:12345"} }
 
-func (m *agentMockContext) LocalAddr() net.Addr                     { return &agentMockAddr{addr: "127.0.0.1:22"} }
-func (m *agentMockContext) Permissions() *ssh.Permissions           { return m.permissions }
-func (m *agentMockContext) SetValue(key, value interface{})         {}
-func (m *agentMockContext) Value(key interface{}) interface{}       { return nil }
+func (m *agentMockContext) LocalAddr() net.Addr           { return &agentMockAddr{addr: "127.0.0.1:22"} }
+func (m *agentMockContext) Permissions() *ssh.Permissions { return m.permissions }
+
+func (m *agentMockContext) SetValue(key, value interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.values[key] = value
+}
+
+func (m *agentMockContext) Value(key interface{}) interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.values[key]
+}
+
 func (m *agentMockContext) Deadline() (deadline time.Time, ok bool) { return time.Time{}, false }
 func (m *agentMockContext) Done() <-chan struct{}                   { return nil }
 func (m *agentMockContext) Err() error                              { return nil }
@@ -402,34 +330,85 @@ type agentMockAddr struct {
 func (m *agentMockAddr) Network() string { return "tcp" }
 func (m *agentMockAddr) String() string  { return m.addr }
 
-// agentMockConn is a mock implementation of net.Conn for testing agent data copying.
-type agentMockConn struct {
-	readData  []byte
-	writeData []byte
-	closed    bool
+// fakeSession implements the (large) ssh.Session interface just enough to
+// exercise setupAgentForwarding/ssh.AgentRequested in tests: only User,
+// RemoteAddr, LocalAddr, and Context are meaningfully used by that code
+// path, so the rest are unused stubs.
+type fakeSession struct {
+	ctx *agentMockContext
 }
 
-func (m *agentMockConn) Read(b []byte) (n int, err error) {
-	if len(m.readData) == 0 {
-		return 0, io.EOF
+func newFakeSession(ctx *agentMockContext) *fakeSession {
+	return &fakeSession{ctx: ctx}
+}
+
+func (s *fakeSession) Read(p []byte) (int, error)  { return 0, nil }
+func (s *fakeSession) Write(p []byte) (int, error) { return len(p), nil }
+func (s *fakeSession) Close() error                { return nil }
+func (s *fakeSession) CloseWrite() error           { return nil }
+func (s *fakeSession) SendRequest(name string, wantReply bool, payload []byte) (bool, error) {
+	return false, nil
+}
+func (s *fakeSession) Stderr() io.ReadWriter { return nil }
+
+func (s *fakeSession) User() string             { return s.ctx.User() }
+func (s *fakeSession) RemoteAddr() net.Addr     { return s.ctx.RemoteAddr() }
+func (s *fakeSession) LocalAddr() net.Addr      { return s.ctx.LocalAddr() }
+func (s *fakeSession) Environ() []string        { return nil }
+func (s *fakeSession) Exit(code int) error      { return nil }
+func (s *fakeSession) Command() []string        { return nil }
+func (s *fakeSession) RawCommand() string       { return "" }
+func (s *fakeSession) Subsystem() string        { return "" }
+func (s *fakeSession) PublicKey() ssh.PublicKey { return nil }
+func (s *fakeSession) Context() ssh.Context     { return s.ctx }
+func (s *fakeSession) Permissions() ssh.Permissions {
+	if s.ctx.permissions == nil {
+		return ssh.Permissions{}
 	}
-	n = copy(b, m.readData)
-	m.readData = m.readData[n:]
-	return n, nil
+	return *s.ctx.permissions
+}
+func (s *fakeSession) Pty() (ssh.Pty, <-chan ssh.Window, bool) { return ssh.Pty{}, nil, false }
+func (s *fakeSession) Signals(c chan<- ssh.Signal)             {}
+func (s *fakeSession) Break(c chan<- bool)                     {}
+
+// fakeNewChannel implements gossh.NewChannel to verify
+// CreateAgentForwardingHandler rejects inbound channels rather than
+// accepting/servicing them.
+type fakeNewChannel struct {
+	rejected     bool
+	rejectReason gossh.RejectionReason
 }
 
-func (m *agentMockConn) Write(b []byte) (n int, err error) {
-	m.writeData = append(m.writeData, b...)
-	return len(b), nil
+func (c *fakeNewChannel) Accept() (gossh.Channel, <-chan *gossh.Request, error) {
+	return nil, nil, nil
 }
 
-func (m *agentMockConn) Close() error {
-	m.closed = true
+func (c *fakeNewChannel) Reject(reason gossh.RejectionReason, message string) error {
+	c.rejected = true
+	c.rejectReason = reason
 	return nil
 }
 
-func (m *agentMockConn) LocalAddr() net.Addr                { return nil }
-func (m *agentMockConn) RemoteAddr() net.Addr               { return nil }
-func (m *agentMockConn) SetDeadline(t time.Time) error      { return nil }
-func (m *agentMockConn) SetReadDeadline(t time.Time) error  { return nil }
-func (m *agentMockConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *fakeNewChannel) ChannelType() string { return "auth-agent@openssh.com" }
+func (c *fakeNewChannel) ExtraData() []byte   { return nil }
+
+// fakeGosshConn implements gossh.Conn with no-op methods, sufficient for
+// ssh.ForwardAgentConnections to type-assert against and block on
+// listener.Accept() without ever needing to actually open a channel in
+// tests that don't push a connection through the forwarded socket.
+type fakeGosshConn struct{}
+
+func (c *fakeGosshConn) User() string          { return "testuser" }
+func (c *fakeGosshConn) SessionID() []byte     { return nil }
+func (c *fakeGosshConn) ClientVersion() []byte { return nil }
+func (c *fakeGosshConn) ServerVersion() []byte { return nil }
+func (c *fakeGosshConn) RemoteAddr() net.Addr  { return &agentMockAddr{addr: "127.0.0.1:12345"} }
+func (c *fakeGosshConn) LocalAddr() net.Addr   { return &agentMockAddr{addr: "127.0.0.1:22"} }
+func (c *fakeGosshConn) SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error) {
+	return false, nil, nil
+}
+func (c *fakeGosshConn) OpenChannel(name string, data []byte) (gossh.Channel, <-chan *gossh.Request, error) {
+	return nil, nil, nil
+}
+func (c *fakeGosshConn) Close() error { return nil }
+func (c *fakeGosshConn) Wait() error  { return nil }

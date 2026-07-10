@@ -123,7 +123,7 @@ func TestBuildSessionEnvironmentDoesNotLeakDaemonEnvironment(t *testing.T) {
 	const sentinelKey = "GO_SSHD_TEST_SECRET_SENTINEL"
 	t.Setenv(sentinelKey, "super-secret-value")
 
-	env := buildSessionEnvironment("alice", "/bin/bash", "xterm", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
+	env := buildSessionEnvironment("alice", "/bin/bash", "", "xterm", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
 
 	for _, kv := range env {
 		assert.NotContains(t, kv, sentinelKey, "session environment must not inherit the daemon's own process environment")
@@ -133,7 +133,7 @@ func TestBuildSessionEnvironmentDoesNotLeakDaemonEnvironment(t *testing.T) {
 // TestBuildSessionEnvironmentSetsExpectedVars verifies the explicit,
 // minimal environment contains exactly the variables a session needs.
 func TestBuildSessionEnvironmentSetsExpectedVars(t *testing.T) {
-	env := buildSessionEnvironment("alice", "/bin/zsh", "xterm-256color", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
+	env := buildSessionEnvironment("alice", "/bin/zsh", "", "xterm-256color", "/home/alice", "1.2.3.4:22", "5.6.7.8:22")
 
 	assert.Contains(t, env, "PATH="+defaultSessionPath)
 	assert.Contains(t, env, "SHELL=/bin/zsh")
@@ -145,11 +145,30 @@ func TestBuildSessionEnvironmentSetsExpectedVars(t *testing.T) {
 	assert.Contains(t, env, "SSH_CONNECTION=1.2.3.4:22 5.6.7.8:22")
 }
 
+// TestBuildSessionEnvironmentSetsAgentSocketWhenPresent verifies
+// SSH_AUTH_SOCK is exposed to the session when agent forwarding was set up.
+func TestBuildSessionEnvironmentSetsAgentSocketWhenPresent(t *testing.T) {
+	env := buildSessionEnvironment("alice", "/bin/zsh", "/tmp/agent.sock", "", "", "1.2.3.4:22", "5.6.7.8:22")
+
+	assert.Contains(t, env, "SSH_AUTH_SOCK=/tmp/agent.sock")
+}
+
+// TestBuildSessionEnvironmentOmitsAgentSocketWhenAbsent verifies
+// SSH_AUTH_SOCK is omitted rather than emitted empty when agent forwarding
+// was not requested/set up.
+func TestBuildSessionEnvironmentOmitsAgentSocketWhenAbsent(t *testing.T) {
+	env := buildSessionEnvironment("alice", "/bin/zsh", "", "", "", "1.2.3.4:22", "5.6.7.8:22")
+
+	for _, kv := range env {
+		assert.False(t, strings.HasPrefix(kv, "SSH_AUTH_SOCK="), "SSH_AUTH_SOCK should be omitted when agent forwarding was not set up")
+	}
+}
+
 // TestBuildSessionEnvironmentOmitsEmptyOptionalFields verifies TERM/HOME are
 // omitted rather than emitted empty when not applicable (e.g. non-PTY
 // sessions or unresolvable users).
 func TestBuildSessionEnvironmentOmitsEmptyOptionalFields(t *testing.T) {
-	env := buildSessionEnvironment("alice", "/bin/sh", "", "", "1.2.3.4:22", "5.6.7.8:22")
+	env := buildSessionEnvironment("alice", "/bin/sh", "", "", "", "1.2.3.4:22", "5.6.7.8:22")
 
 	for _, kv := range env {
 		assert.False(t, strings.HasPrefix(kv, "TERM="), "TERM should be omitted for non-PTY sessions")

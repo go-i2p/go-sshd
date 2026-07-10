@@ -60,10 +60,17 @@ func (h *ShellHandler) CreateSessionHandler() ssh.Handler {
 			return
 		}
 
+		// Set up real SSH agent forwarding if the client requested it -
+		// exposes SSH_AUTH_SOCK to the spawned shell/command and proxies
+		// connections on it back to the client's agent for the session's
+		// duration.
+		authSock, cleanupAgent := setupAgentForwarding(s, h.logger)
+		defer cleanupAgent()
+
 		if isPty {
-			h.handlePTYSession(s, shell, ptyReq, winCh, keyOpts)
+			h.handlePTYSession(s, shell, authSock, ptyReq, winCh, keyOpts)
 		} else {
-			h.handleNonPTYSession(s, shell, keyOpts)
+			h.handleNonPTYSession(s, shell, authSock, keyOpts)
 		}
 
 		h.logger.Infof("Shell session ended for user %s", user)
@@ -73,7 +80,7 @@ func (h *ShellHandler) CreateSessionHandler() ssh.Handler {
 // handlePTYSession handles interactive shell sessions with PTY support.
 // Uses gliderlabs/ssh built-in PTY functionality for proper terminal emulation.
 // Enforces command restrictions from authorized_keys when present.
-func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.Pty, winCh <-chan ssh.Window, keyOpts *AuthorizedKeyOptions) {
+func (h *ShellHandler) handlePTYSession(s ssh.Session, shell, authSock string, ptyReq ssh.Pty, winCh <-chan ssh.Window, keyOpts *AuthorizedKeyOptions) {
 	user := s.User()
 	h.logger.Debugf("Starting PTY session for user %s with terminal %s", user, ptyReq.Term)
 
@@ -89,7 +96,7 @@ func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.
 		cmd = exec.Command(shell, "-l") // Login shell
 	}
 
-	cmd.Env = h.buildEnvironment(s, shell, ptyReq.Term)
+	cmd.Env = h.buildEnvironment(s, shell, authSock, ptyReq.Term)
 
 	// Connect session I/O directly to shell process
 	// gliderlabs/ssh handles PTY setup automatically
@@ -129,7 +136,7 @@ func (h *ShellHandler) handlePTYSession(s ssh.Session, shell string, ptyReq ssh.
 // handleNonPTYSession handles non-interactive shell sessions (command execution).
 // Uses standard os/exec without PTY for simple command execution.
 // Enforces command restrictions from authorized_keys when present.
-func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string, keyOpts *AuthorizedKeyOptions) {
+func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell, authSock string, keyOpts *AuthorizedKeyOptions) {
 	user := s.User()
 	h.logger.Debugf("Starting non-PTY session for user %s", user)
 
@@ -150,7 +157,7 @@ func (h *ShellHandler) handleNonPTYSession(s ssh.Session, shell string, keyOpts 
 	cmd := exec.Command(shell, "-c", commandToRun)
 
 	// Build environment, adding SSH_ORIGINAL_COMMAND if there's a forced command
-	env := h.buildEnvironment(s, shell, "")
+	env := h.buildEnvironment(s, shell, authSock, "")
 	if keyOpts != nil && keyOpts.Command != "" && s.RawCommand() != "" {
 		env = append(env, fmt.Sprintf("SSH_ORIGINAL_COMMAND=%s", s.RawCommand()))
 	}
@@ -331,20 +338,20 @@ const defaultSessionPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/s
 // - to every authenticated user regardless of that user's own privilege
 // level. Real OpenSSH never forwards its own environment to sessions; it
 // only forwards client-requested variables that appear in AcceptEnv.
-func (h *ShellHandler) buildEnvironment(s ssh.Session, shell, term string) []string {
+func (h *ShellHandler) buildEnvironment(s ssh.Session, shell, authSock, term string) []string {
 	homeDir := ""
 	if u, err := user.Lookup(s.User()); err == nil {
 		homeDir = u.HomeDir
 	}
 
-	return buildSessionEnvironment(s.User(), shell, term, homeDir, s.RemoteAddr().String(), s.LocalAddr().String())
+	return buildSessionEnvironment(s.User(), shell, authSock, term, homeDir, s.RemoteAddr().String(), s.LocalAddr().String())
 }
 
 // buildSessionEnvironment is the pure, session-independent core of
 // buildEnvironment. It is kept separate from ssh.Session so the "no
 // inherited daemon environment" contract can be unit tested without a full
 // ssh.Session mock.
-func buildSessionEnvironment(username, shell, term, homeDir, remoteAddr, localAddr string) []string {
+func buildSessionEnvironment(username, shell, authSock, term, homeDir, remoteAddr, localAddr string) []string {
 	env := []string{
 		fmt.Sprintf("PATH=%s", defaultSessionPath),
 		fmt.Sprintf("SHELL=%s", shell),
@@ -362,6 +369,12 @@ func buildSessionEnvironment(username, shell, term, homeDir, remoteAddr, localAd
 	// Set HOME directory for user
 	if homeDir != "" {
 		env = append(env, fmt.Sprintf("HOME=%s", homeDir))
+	}
+
+	// Expose the per-session agent forwarding socket, if the client
+	// requested agent forwarding and setupAgentForwarding succeeded.
+	if authSock != "" {
+		env = append(env, fmt.Sprintf("SSH_AUTH_SOCK=%s", authSock))
 	}
 
 	return env
