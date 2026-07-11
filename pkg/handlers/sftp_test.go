@@ -277,6 +277,42 @@ func TestSecureSFTPHandlers_ResolvePath_NoConfinement(t *testing.T) {
 	assert.Equal(t, "/etc/passwd", result)
 }
 
+// TestSecureSFTPHandlers_ResolvePath_SymlinkEscape verifies that resolvePath
+// rejects paths that resolve via symlinks to locations outside the working directory.
+func TestSecureSFTPHandlers_ResolvePath_SymlinkEscape(t *testing.T) {
+	// Create a temporary directory structure for testing
+	tmpDir := t.TempDir()
+	workDir := filepath.Join(tmpDir, "work")
+	outsideDir := filepath.Join(tmpDir, "outside")
+
+	err := os.MkdirAll(workDir, 0755)
+	require.NoError(t, err)
+	err = os.MkdirAll(outsideDir, 0755)
+	require.NoError(t, err)
+
+	// Create a file outside the working directory
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	err = os.WriteFile(outsideFile, []byte("secret"), 0644)
+	require.NoError(t, err)
+
+	// Create a symlink inside the working directory that points outside
+	symlinkPath := filepath.Join(workDir, "link_to_secret")
+	err = os.Symlink(outsideFile, symlinkPath)
+	require.NoError(t, err)
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	cfg := &config.Config{}
+	handler := NewSFTPHandler(cfg, logger)
+	secureHandlers := newSecureSFTPHandlers(handler, "testuser", workDir)
+
+	// Attempting to resolve the symlink should fail because it escapes the working directory
+	result, err := secureHandlers.resolvePath("link_to_secret")
+	assert.Error(t, err)
+	assert.Equal(t, "", result)
+	assert.Contains(t, err.Error(), "resolves outside configured root")
+}
+
 func TestSecureSFTPHandlers_FilereadValidation(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)

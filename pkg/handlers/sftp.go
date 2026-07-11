@@ -56,6 +56,8 @@ func (h *SFTPHandler) CreateSubsystemHandler() ssh.SubsystemHandler {
 
 		// Create SFTP request server using pkg/sftp with security-validating handlers
 		// Using RequestServer instead of Server allows us to intercept and validate all operations
+		// Note: WithDebug is not available for RequestServer; debug logging would require
+		// switching to pkg/sftp.Server, which would lose our custom security handler integration
 		server := sftp.NewRequestServer(s, secureHandlers.Handlers(),
 			sftp.WithStartDirectory(workingDir))
 
@@ -121,9 +123,16 @@ func (h *SFTPHandler) GetSupportedSubsystems() []string {
 	return []string{"sftp"}
 }
 
-// ConfigureChroot configures SFTP chroot functionality based on user and security settings.
-// This implements a secure default approach where users are restricted to their home directories.
-// Following OpenSSH patterns for SFTP security and user isolation.
+// ConfigureChroot configures SFTP root directory (working directory) based on user and security settings.
+// This implements a lexical-path-based confinement where users are restricted to a root directory
+// via pathname checking (not an OS-level chroot/mount namespace).
+// Note: Confinement is "lexical" (string path prefix checking) and can theoretically be escaped
+// via pre-existing symlinks on the filesystem. This is mitigated by:
+// 1) resolvePath() using filepath.EvalSymlinks to detect symlink escapes at decision time
+// 2) serveWithUserPrivileges() dropping privileges to the authenticated user (when running as root)
+// 3) OS permission checks re-applied at the syscall level by the authenticated user's credentials
+// For truly isolated environments (non-root deployments), use OS-level confinement mechanisms
+// (e.g. mount namespaces, containerization).
 // Priority: 1) Configured SFTPRootDir 2) User home directory 3) Fallback to /
 func (h *SFTPHandler) ConfigureChroot(username string) (string, error) {
 	// Try configured root directory first
@@ -310,6 +319,8 @@ func (s *secureSFTPHandlers) Handlers() sftp.Handlers {
 // standard SFTP clients routinely send absolute paths, so workingDir must
 // always be applied regardless of whether requestPath is absolute. Returns
 // an error if the resolved path would escape workingDir.
+// Hardening: Uses filepath.EvalSymlinks to detect symlink-based escape attempts,
+// preventing pre-existing symlinks from bypassing the root directory restriction.
 func (s *secureSFTPHandlers) resolvePath(requestPath string) (string, error) {
 	root := filepath.Clean(s.workingDir)
 	resolved := filepath.Clean(filepath.Join(root, requestPath))
@@ -319,9 +330,21 @@ func (s *secureSFTPHandlers) resolvePath(requestPath string) (string, error) {
 		return resolved, nil
 	}
 
+	// First, check lexical path confinement (basic protection against ../ traversal)
 	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes configured root %q", requestPath, root)
 	}
+
+	// Second, resolve symlinks and re-check to prevent symlink-based escape
+	// EvalSymlinks may fail if the path doesn't exist (file not yet created),
+	// so we only validate if the path exists on the filesystem
+	if evalResolved, err := filepath.EvalSymlinks(resolved); err == nil {
+		// Path exists and symlinks were evaluated; verify the real path stays in bounds
+		if evalResolved != root && !strings.HasPrefix(evalResolved, root+string(filepath.Separator)) {
+			return "", fmt.Errorf("symlink in %q resolves outside configured root %q", requestPath, root)
+		}
+	}
+	// If EvalSymlinks fails (path doesn't exist yet), that's OK - we allow creating new files
 
 	return resolved, nil
 }

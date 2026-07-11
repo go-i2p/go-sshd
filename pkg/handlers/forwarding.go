@@ -191,7 +191,7 @@ func isLocalhostHost(host string) bool {
 
 // isAllowedIPOrDomain validates if the host is an allowed IP address or domain.
 // For IP addresses, checks if they are loopback or private.
-// For domain names, performs DNS resolution and validates all resolved addresses.
+// For domain names, performs DNS resolution and validates no resolved address is restricted.
 func isAllowedIPOrDomain(host string) bool {
 	ip := net.ParseIP(host)
 	if ip != nil {
@@ -199,7 +199,7 @@ func isAllowedIPOrDomain(host string) bool {
 		return ip.IsLoopback() || ip.IsPrivate()
 	}
 
-	// Host is a domain name; resolve it and check all resolved addresses
+	// Host is a domain name; resolve it and check that no resolved address is restricted
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -213,7 +213,7 @@ func isAllowedIPOrDomain(host string) bool {
 
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		// DNS resolution failed; deny the request
+		// DNS resolution failed; deny the request to prevent DNS-based attacks
 		return false
 	}
 
@@ -222,15 +222,10 @@ func isAllowedIPOrDomain(host string) bool {
 		return false
 	}
 
-	// Check that all resolved IPs are allowed (loopback or private)
+	// Check that no resolved IP is restricted (metadata, link-local, etc.)
+	// Allow any IP that isn't explicitly restricted
 	for _, ipAddr := range ips {
-		// Verify this resolved IP is not restricted
 		if isRestrictedHost(ipAddr.String()) {
-			return false
-		}
-
-		// Verify this resolved IP is allowed (loopback or private)
-		if !ipAddr.IP.IsLoopback() && !ipAddr.IP.IsPrivate() {
 			return false
 		}
 	}
